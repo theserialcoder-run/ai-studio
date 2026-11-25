@@ -4,200 +4,174 @@ Guidance for Claude Code (and humans) working in this repository. It describes t
 
 ## What this is
 
-Wonderboy AI Studio is a private, single-user **AI filmmaking workspace**. It runs as a local Next.js app and is used in the browser. It manages multiple film projects, and each project holds its own:
+Wonderboy AI Studio is a private, single-user **AI filmmaking studio**. It runs as a local Next.js app and is used in the browser. The workflow is:
 
-- scripts (screenplay text) organised into **scenes**,
-- **shots** per scene, with camera, lighting, mood and duration details,
-- a **character library** (identity + wardrobe/appearance variations + reference images),
-- a **location library** (fixed details + camera angles + reference images),
-- an **asset library** of uploaded files (images, video, audio, documents),
-- continuity links from each shot to its characters, location and reference files,
-- an activity log and progress dashboard.
+**Project → Script → Scenes → Shots → characters & locations (with reference images) → prompt → generate image → generate video → saved to the project and its shot.**
 
-There is also an AI companion chat (Gemini, optional) and Image/Video Studio screens that build structured **continuity bundles** for future generation providers. **No image or video generation is implemented.** The generate routes are placeholders. See [Limitations](#limitations--unfinished-work).
+Each project holds scripts, scenes, shots, a character library (identity + wardrobe variations + reference images), a location library (fixed details + camera angles + reference images), an asset library of files, AI conversations and a generation history.
 
-Other docs:
-- `docs/PROGRESS.md` is the source of truth for feature status. Update it after meaningful changes.
-- `docs/ARCHITECTURE.md` covers the continuity design and provider-adapter principles.
-- `docs/PROVIDERS.md` covers how to choose and connect Gemini and image/video providers.
+The AI engine (all server-side, provider-independent):
+- **AI Companion:** multi-turn chat, persisted per project, aware of the live project. It has mic dictation and spoken replies (browser Web Speech API), and returns **proposals** (scripts, scenes, shots, characters, locations, logline) that the user reviews before applying.
+- **Script Assistant:** ideas, loglines, outlines, full scripts, script/scene improvement, dialogue rewrites, scene breakdowns, shot lists, character and location suggestions. All of these come back as reviewable proposals.
+- **Image generation:** Cloudflare FLUX.2 (free daily allocation, up to 4 reference images), FLUX.1 schnell (text-only), Gemini Nano Banana (paid, up to 14 references). Supports image-to-image.
+- **Video generation:** Gemini Omni Flash (paid: text-, image- and reference-to-video) and fal.ai (paid: Kling image-to-video, Wan text-to-video).
+
+See `docs/PROVIDERS.md` for setup, costs and per-integration status.
+
+**Product direction (decided Nov 2026):** the output is for a **monetized YouTube channel** on a **$50/month budget**. Prefer free tiers. For real generation, the plan is to **rent a GPU (RunPod) and run open, commercially licensed models via ComfyUI** (Qwen-Image, Qwen-Image-Edit, Wan 2.2), paying only for GPU time. This is **planned, not built**; see the roadmap in `docs/PROGRESS.md`. Rules that follow from it:
+- Only use models whose licences allow commercial use for production features. Flag anything else.
+- Never start a paid GPU or paid job without an explicit user action, with the price shown. GPU features must include idle auto-stop and respect the budget cap.
+- Paid per-call APIs (Gemini image/Omni, fal.ai) stay as optional fallbacks, not the default path.
+
+Other docs: `docs/PROGRESS.md` (feature status; update it after meaningful changes) and `docs/ARCHITECTURE.md` (continuity design).
 
 ## Tech stack
 
 | Area | Choice |
 |---|---|
 | Framework | Next.js 15 (App Router), React 19 |
-| Language | TypeScript 5, `strict: true`, path alias `@/*` → `src/*` |
-| Styling | One global stylesheet, `src/app/globals.css`: plain CSS with custom-property tokens. No Tailwind, no CSS modules, no component library |
-| Fonts | Google Fonts via CSS `@import`: DM Sans, DM Mono, Playfair Display |
-| Persistence | JSON documents + uploaded files on the local file system, via Node `fs` in API routes (no database) |
-| AI | Gemini `generateContent` REST API via `fetch` in `/api/chat` (no SDK) |
-| State | React state + one custom hook (`useWorkspace`) + a React context (`StudioContext`) |
-| Lint | ESLint 9 flat config (`eslint.config.mjs`) extending `next/core-web-vitals` + `next/typescript` |
+| Language | TypeScript 5 strict, alias `@/*` → `src/*` |
+| Styling | One global stylesheet `src/app/globals.css` with custom-property tokens. No Tailwind or UI kit |
+| Persistence | JSON documents + files on the local file system via Node `fs` (no database) |
+| AI | Plain `fetch` / `node:https` REST calls to Gemini (generateContent + Interactions API), Cloudflare Workers AI, fal.ai queue, and any OpenAI-compatible endpoint. **No SDKs** |
+| Voice | Browser `SpeechRecognition` + `speechSynthesis` |
+| Lint | ESLint 9 flat config (`eslint.config.mjs`) |
 | Runtime deps | Only `next`, `react` and `react-dom`. Keep it that way unless there is a strong reason |
 
 ## Commands
 
-Requires Node.js ≥ 20.9 and npm.
-
 ```bash
 npm install
-cp .env.example .env.local   # optional; app works without keys
+cp .env.example .env.local   # add keys you need (see docs/PROVIDERS.md); app runs without them
 npm run dev                  # http://localhost:3000
-npm run lint                 # ESLint
-npx tsc --noEmit             # type check (also runs during build)
-npm run build                # production build (also lints + type-checks)
-npm start                    # serve the production build
+npm run lint
+npx tsc --noEmit
+npm run build
+npm start
 ```
 
-- **Tests:** there is no test suite and no `test` script. Verify with `npx tsc --noEmit`, `npm run lint` and `npm run build`. For storage/API changes, a short `curl` smoke test against `npm start` with `WONDERBOY_DATA_DIR` pointing at a temporary folder is enough.
-- **The dev machine has limited RAM (8 GB).** Don't run headless browsers, screenshot tooling or long-lived background servers unless asked.
-- `next dev` and `next start` both write `.next/`. Never run them at the same time.
-- `.env.local` changes need a server restart.
+- **Tests:** there's no test suite. Verify with `npx tsc --noEmit`, `npm run lint` and `npm run build`. For API/storage changes, run a short `curl` smoke test against `npm start` with `WONDERBOY_DATA_DIR` set to a temp folder.
+  - Start the server with `node_modules/.bin/next start`, not `npx` (killing `npx` leaves the server running), and confirm port 3000/3123 is free afterwards.
+  - **Never** call paid providers in tests. Fake credentials are fine for exercising error paths.
+- **Dev machine has 8 GB RAM.** No headless browsers, screenshot tools or long-lived background servers unless asked.
+- `next dev` and `next start` both write `.next/`. Never run both at once.
+- `.env.local` changes require a server restart.
 
 ## Folder structure
 
 ```
 src/
   app/
-    layout.tsx                         Root layout, imports globals.css
-    page.tsx                           App shell: sidebar (project switcher + nav), topbar (save state), banner, view routing
-    globals.css                        All styles (tokens → base → shell → components → views → responsive)
+    page.tsx                         Shell: sidebar (project switcher, nav), topbar (save state), banner, view routing
+    globals.css                      All styles
     api/
-      chat/route.ts                    POST Gemini companion
-      generate/image/route.ts          POST placeholder; accepts a continuity bundle, never calls a provider
-      generate/video/route.ts          POST placeholder; same
-      projects/route.ts                GET list · POST create
-      projects/[id]/route.ts           GET document · PUT replace (revision-checked) · DELETE project + files
-      projects/[id]/files/route.ts     POST multipart upload → asset records
-      projects/[id]/files/[assetId]/route.ts   GET stream file (Range support)
+      projects/route.ts              GET list · POST create
+      projects/[id]/route.ts         GET · PUT (revision-checked) · DELETE
+      projects/[id]/files/…          POST upload · GET [assetId] stream (Range)
+      projects/[id]/generations/     GET history (+live progress) · POST start job
+      projects/[id]/conversations/   GET · POST; [cid] PATCH/DELETE; [cid]/messages POST (chat turn)
+      projects/[id]/assist/          POST script-assistant task → proposals
+      providers/route.ts             GET provider registry (status + capabilities, no secrets)
   components/
-    studio.tsx                         StudioContext/useStudio, TABS, shared UI (fields, Modal, AssetPreview,
-                                       UploadButton, AssetPicker, ReferenceImages, RowActions)
-    ProjectsView.tsx                   Create / open / rename / delete projects
-    DashboardView.tsx                  Overview: stats, progress bars, recent activity, workflow
-    CompanionView.tsx                  AI chat (+ browser speech in/out)
-    ScriptStudio.tsx                   Scripts list, screenplay editor, scenes (edit/reorder/delete, slugline import)
-    ShotPlanner.tsx                    Shots per scene (full spec, reorder/duplicate/delete, continuity links)
-    ContinuityPicker.tsx               Characters (+variation) and location (+angle) selector
-    CharacterLibrary.tsx               Characters, identity references, wardrobe variations
-    LocationLibrary.tsx                Locations, master references, camera angles
-    AssetLibrary.tsx                   Upload, filter, tag, link/unlink, download, delete files
-    GenerationStudio.tsx               Image/Video Studio: builds continuity bundle + prompt, calls placeholder routes
-    SettingsView.tsx                   Project settings, style bible, provider info, export, delete
+    studio.tsx                       StudioContext/useStudio, TABS, shared UI (fields, Modal, AssetPreview, ReferenceImages…)
+    CompanionView.tsx                AI chat: conversations, voice in/out, proposals
+    ProposalCard.tsx                 Review/apply UI for AI proposals (confirms before overwriting)
+    ScriptStudio.tsx, ScriptAssistant.tsx
+    ShotPlanner.tsx, ContinuityPicker.tsx, CharacterLibrary.tsx, LocationLibrary.tsx, AssetLibrary.tsx
+    GenerationStudio.tsx             Image/Video Studio: provider, shot/refs, source/start frame, settings, jobs
+    DashboardView.tsx, ProjectsView.tsx, SettingsView.tsx (incl. AI providers panel)
   lib/
-    types.ts                           Domain types (Project, Script, Scene, Shot, Character, Location, Asset, …)
-    projectModel.ts                    PURE helpers shared by client + server: factories, normalizeProject (validation),
-                                       selectors (shot/scene numbering), mutations (cascading deletes), activity log
-    continuity.ts                      buildContinuityBundle / continuityPrompt (generation request contract)
-    client/api.ts                      fetch wrappers for /api/projects*
-    client/useWorkspace.ts             Workspace hook: project list, open project, mutate + debounced save, uploads
-    client/legacy.ts                   One-time import of the old localStorage project format
-    server/storage.ts                  File-system persistence (server-only; imports node:fs)
-    server/http.ts                     StorageError → JSON response
-    server/generation.ts               Summarizes received continuity bundles for placeholder routes
-  types/speech.d.ts                    Web Speech API typings
-data/                                  Runtime data (git-ignored), see Storage
-docs/                                  PROGRESS.md, ARCHITECTURE.md, PROVIDERS.md
+    types.ts                         Domain types
+    projectModel.ts                  PURE: factories, normalizeProject, selectors, cascading mutations
+    continuity.ts                    PURE: ContinuityBundle + prompt text for a shot / manual selection
+    proposals.ts                     PURE: Proposal types, normalizeProposal(s), applyProposal, chat-block parsing
+    ai/types.ts                      Shared AI types (caps, provider info, GenerationRequest/Record, Conversation)
+    client/api.ts, client/useWorkspace.ts, client/legacy.ts
+    client/ai.ts                     AI route wrappers + prepareImage (canvas downscale for references)
+    client/useAi.ts                  Providers + generation polling; imports finished outputs into the project once
+    server/storage.ts                fs persistence, side files, generated-file saving (server-only)
+    server/http.ts                   StorageError/ProviderError → JSON response
+    server/ai/http.ts                ProviderError, HTTP error explanations, postJsonLong (node:https, long timeout)
+    server/ai/llm.ts                 Gemini generateContent + OpenAI-compatible; chat()
+    server/ai/image.ts               Cloudflare FLUX.2 klein/dev, FLUX.1 schnell, Gemini image (Interactions API)
+    server/ai/video.ts               Gemini Omni Flash (Interactions API), fal.ai queue (Kling/Wan)
+    server/generations.ts            Job validation (caps, paid approval), background runner, records
+    server/assistant.ts              Project context builder, companion prompt, conversations, script-assistant tasks
+data/                                Runtime data (git-ignored)
 ```
 
 ## Storage
 
-Server-side, under `data/` (override with `WONDERBOY_DATA_DIR`):
-
 ```
-data/projects/<projectId>/project.json        the whole project document
-data/projects/<projectId>/project.json.bak    previous saved version (written on every save)
-data/projects/<projectId>/files/<assetId>.<ext>   uploaded files
+data/projects/<id>/project.json          project document (client-owned, revision-checked PUT)
+data/projects/<id>/project.json.bak      previous version
+data/projects/<id>/files/<assetId>.<ext> uploaded and generated files
+data/projects/<id>/generations.json      generation job records (server-owned)
+data/projects/<id>/conversations.json    AI conversations (server-owned)
 ```
 
-- Writes are atomic (temp file + rename) and serialised per project with an in-process lock.
-- **Optimistic concurrency:** each document has a `revision`. `PUT` must send the revision it last saw, and a mismatch returns `409`. The UI then shows a conflict banner with a "Reload project" button.
-- Every load and save passes through `normalizeProject()`, which fills defaults, coerces types, and drops dangling references (unknown character, location, scene or asset IDs). Keep it in sync when the model changes, because it doubles as the schema migration.
-- **File lifecycle:** upload stores the file and returns an `Asset` record, and the client adds that record to the document. When a saved document no longer contains an asset, the server deletes its file. Deleting a project deletes its folder.
-- Files are looked up by asset-ID prefix on disk, so they're viewable before the document save lands.
-- IDs in URLs must match `^[A-Za-z0-9_-]{1,64}$`, which prevents path traversal.
-- First run: when `data/projects` doesn't exist yet, the client imports the old `localStorage["wonderboy-studio-project-v1"]` project if present (base64 images become real uploaded files), or else creates the starter project "The Disturbance". The old browser data is left untouched.
-- The last opened project ID is remembered in `localStorage["wonderboy-active-project"]`. That's a convenience only.
+- `project.json` is written by the client through `PUT`, with optimistic concurrency (a `409` triggers a reload banner). Side files are written only by the server under a per-file lock, so they never conflict with client saves.
+- `normalizeProject()` validates every load and save and drops dangling references. Keep it in sync with `types.ts`.
+- Removing an asset from the document deletes its file on the next save.
+- **Generated outputs:** the job runner writes files and stores their `Asset` records in the generation record. The client (`useAi`) then adds them to `project.assets`, links them to `shot.generatedAssetIds`, and records the job ID in `project.importedGenerationIds`, so each job is imported once even if its asset is later deleted.
 
-## Data model (`src/lib/types.ts`)
+## Data model highlights (`src/lib/types.ts`)
 
-One `Project` document contains everything:
+- Project: `scripts`, `scenes` (array order = scene order per script), `shots` (array order = shot order per scene), `characters` (+ `variations`), `locations` (+ `angles`), `assets`, `activity`, `importedGenerationIds`.
+- Shot: camera fields, `characters: {characterId, variationId}[]`, `locationId`, `locationAngleId`, `assetIds` (references), and `generatedAssetIds` (AI takes).
+- Shot and scene numbers are derived (`shotNumber`, `sceneNumber`). Never store them.
 
-- `scripts: Script[]`: `{ title, content }`.
-- `scenes: Scene[]`: `{ scriptId, heading (slugline), title, description, dialogue, characterIds[], locationId }`. **Array order is scene order** within a script.
-- `shots: Shot[]`: `{ sceneId|null, title, description, cameraAngle, cameraMovement, framing, lighting, mood, durationSec, status, notes, characters: {characterId, variationId}[], locationId, locationAngleId, assetIds[] }`. **Array order is shot order** within a scene. `sceneId: null` means unassigned.
-- `characters: Character[]`: identity (`description, appearance, clothing, personality, notes`), `referenceAssetIds`, `primaryAssetId`, and `variations: {name, description, assetIds}[]` (wardrobe/appearance changes that leave identity intact).
-- `locations: Location[]`: `description, architecture, environment, layout, lighting, visualDetails`, `referenceAssetIds`, `primaryAssetId`, and `angles: {name, description, assetIds}[]`.
-- `assets: Asset[]`: `{ name, kind, mimeType, size, fileName, tags, notes }`. Other records reference assets **by ID only**. "Used by" is computed by scanning, never stored.
-- `activity: ActivityEntry[]`: newest first, capped at 60. Repeated identical messages within 10 minutes are collapsed.
+## AI architecture
 
-Shot numbers (`"3.2"`, `"U.1"` for unassigned) and scene numbers are **derived** from array order (`shotNumber`, `sceneNumber`). Don't store them.
-
-## Client state and data flow
-
-- `useWorkspace()` (`src/lib/client/useWorkspace.ts`) owns the project list, the open project, `saveState` (`idle | saving | saved | error | conflict`), and these actions: `openProject`, `createProject`, `renameProject`, `deleteProject`, `reloadProject`, `uploadFiles`, `saveNow`.
-- **All edits go through `ws.mutate(recipe, activityMessage?)`**. The recipe mutates a `structuredClone` of the project, and a debounced `PUT` (700 ms) follows. Saves are serialised, and switching projects flushes pending saves first. `beforeunload` attempts a keepalive save and warns if anything is unsaved.
-- Put cascading changes in `projectModel.ts` (`removeCharacter`, `removeLocation`, `removeScene`, `removeAsset`, `moveWithinGroup`, …) so views stay thin.
-- Views read `{ ws, project, notify, go, focusShotId, focusSceneId }` from `useStudio()`. `ProjectsView` is the exception: it takes `ws` as a prop because it must work with no project open.
-- Navigation is in-memory tab state in `page.tsx` (`TABS` in `studio.tsx`), not URL routes. Per-project views are keyed by project ID so local UI state resets on switch.
-- Chat history lives in `page.tsx` (it survives tab switches, not reloads or project switches).
-
-## Continuity (`src/lib/continuity.ts`)
-
-`buildContinuityBundle(project, { shotId } | { characters, locationId, locationAngleId })` returns a `ContinuityBundle` containing:
-- `style`: the project's style bible.
-- `shot`: the full shot spec and derived number.
-- `characters[]`: identity fields, the selected wardrobe variation (or the default clothing), and `referenceImages`. Identity images come first, primary first, then the variation's images.
-- `location`: fields, the selected angle, and `referenceImages` (angle images first).
-- `additionalReferences`: the shot's own image references.
-
-Each `ReferenceImage` is `{ assetId, name, mimeType, url, role, primary }`, where `url` is the same-origin `/api/projects/<id>/files/<assetId>`. A future provider adapter must fetch or upload these server-side. `continuityPrompt()` produces readable prompt text from a bundle. Image/Video Studio `POST`s `{ prompt, userPrompt, continuity }` to the generate routes. **Never claim visual consistency is guaranteed.** The UI deliberately says it isn't, until reference-conditioned generation exists.
+- **Providers** are server-side adapters with honest capability descriptors (`ImageCaps`/`VideoCaps` in `src/lib/ai/types.ts`): max reference images (0 = text-only), image-to-image / image-to-video, aspect ratios, sizes, durations, resolutions, `referenceMaxSide`, and cost per second. `GET /api/providers` exposes `configured`, `billing` (`free-allocation`/`paid`), `costNote`, `requirements`, `setup` and `conditioning`, all derived from env. The UI is driven entirely by this, so adding a provider requires no UI changes.
+- **References:** the browser picks reference images from the shot's continuity bundle (`buildContinuityBundle`, ordered primary identity → wardrobe → location angle → location → shot refs). It downscales them with a canvas (`prepareImage`, ≤511px for Cloudflare FLUX.2) and sends them as base64 JPEG. Adapters label each image in the prompt (FLUX.2: "image N = …", Gemini: a text part before each image).
+- **Jobs:** `POST /generations` validates against caps, requires `approvedPaid: true` for paid providers, stores a `running` record and runs in the background (max 3 concurrent per server). The client polls every 3 s while jobs run. Jobs interrupted by a server restart are marked failed, with advice to check the provider dashboard. Paid jobs are never retried automatically.
+- **Long calls** (Gemini image/video) use `postJsonLong` (`node:https`, up to 20 min), because undici `fetch` has a 5-minute header timeout. fal.ai uses its queue (submit → poll `status_url` → `response_url`). Gemini Omni uses `delivery: "uri"`, then polls Files API state and downloads.
+- **Text:** `chat()` uses `LLM_PROVIDER`, or else the first configured provider (Gemini, then OpenAI-compatible). The companion sends the last 24 messages plus a live project context (`projectContext`, IDs included, ~40k chars max). The client calls `ws.saveNow()` before chat and assist so the server reads current data.
+- **Proposals:** the companion appends a ` ```wonderboy {"proposals":[…]} ``` ` block, and the assistant returns JSON. Both go through `normalizeProposal` (IDs validated against the project). `applyProposal` never deletes. A script replacement needs `replace: true`, which the UI sends only after `confirm()`. Scene updates and logline replacement also ask for confirmation.
+- **Honesty rules:** never claim consistency is guaranteed. Label text-only models as such. Never auto-trigger paid generation. Never fake success: errors from providers are surfaced (`explainHttpError` maps 400/401/402/404/429/5xx).
 
 ## API routes
 
 | Route | Method | Behaviour |
 |---|---|---|
-| `/api/projects` | GET | `{ projects: ProjectSummary[], firstRun }` (sorted by `updatedAt`) |
-| `/api/projects` | POST | `{ name?, logline?, style?, starter? }` → `201 { project }` |
-| `/api/projects/[id]` | GET | `{ project }`, or `404` |
-| `/api/projects/[id]` | PUT | `{ project, revision }` → `{ revision, updatedAt }`, or `409` on conflict, or `400` |
-| `/api/projects/[id]` | DELETE | Removes the document and all files |
-| `/api/projects/[id]/files` | POST | multipart `files` (multiple) → `201 { assets }`. Max 200 MB per file (buffered in memory) |
-| `/api/projects/[id]/files/[assetId]` | GET | Streams the file with `Range` support, `nosniff`, a sandbox CSP, and `inline` only for raster images, video, audio and PDF |
-| `/api/chat` | POST | `{ message, project: {name, logline, style, script, scenes, characters, locations} }` → Gemini `gemini-2.0-flash`, or a "not connected" reply |
-| `/api/generate/image` | POST | `{ prompt, userPrompt, continuity }` → `{ status: "not_configured" \| "adapter_required", message }`. **Never calls a provider** |
-| `/api/generate/video` | POST | Same as image |
+| `/api/projects` | GET / POST | List summaries + `firstRun` / create `{ name, logline?, style?, starter? }` |
+| `/api/projects/[id]` | GET / PUT / DELETE | Document / `{project, revision}` → `{revision, updatedAt}` or `409` / delete everything |
+| `/api/projects/[id]/files` | POST | multipart `files` → `{ assets }` (200 MB max each) |
+| `/api/projects/[id]/files/[assetId]` | GET | Stream with Range, nosniff, sandbox CSP |
+| `/api/providers` | GET | `ProvidersResponse` |
+| `/api/projects/[id]/generations` | GET | `{ generations: (GenerationRecord & {progress})[] }` |
+| `/api/projects/[id]/generations` | POST | `GenerationRequest & {label}` → `202 { generation }`, or `400` with a reason |
+| `/api/projects/[id]/conversations` | GET / POST | List / create |
+| `/api/projects/[id]/conversations/[cid]` | PATCH / DELETE | Rename `{title}` / delete |
+| `/api/projects/[id]/conversations/[cid]/messages` | POST | `{message, focus?: {scriptId, sceneId}}` → `{conversation, provider}`. Persists both turns only on success |
+| `/api/projects/[id]/assist` | POST | `{task, instructions?, focus?}` → `{summary, proposals, provider}` (tasks are listed in `ASSIST_TASKS`) |
 
-No auth: the app assumes a single local user. Environment variables (all optional) are `GEMINI_API_KEY`, `IMAGE_API_URL`, `IMAGE_API_KEY`, `VIDEO_API_URL`, `VIDEO_API_KEY`, `IMAGE_PROVIDER`/`VIDEO_PROVIDER` (unused so far), and `WONDERBOY_DATA_DIR`. Never use secrets in client code and never prefix them `NEXT_PUBLIC_`.
+No auth (single local user). Environment variables are documented in `.env.example`.
 
-## Layout, styling and typography
+## Layout and styling
 
-- **App shell:** above 620px, `.shell` is viewport-height, the sidebar is pinned, only `.main-area` scrolls, and `.topbar` is sticky inside it. At 620px and below, the page scrolls normally and the sidebar becomes a sticky horizontal nav strip. Breakpoints are 1100 / 900 / 620px, using the layout tokens `--sidebar-w`, `--topbar-h` and `--gutter`.
-- **Colour tokens:** `--bg --panel --panel2 --line --text --muted --gold --green`. Dark theme only.
-- **Type scale tokens** (use these, never ad-hoc px): `--fs-micro` 11 (mono caps labels, meta; the minimum), `--fs-xs` 12, `--fs-sm` 13 (buttons), `--fs-input` 14 (16 on mobile), `--fs-base` 15 (body, chat), `--fs-md` 16, `--fs-lg` 18 (panel headings), `--fs-xl` 22 (page title), `--fs-2xl` 28 (section headings, stats), and `--fs-display` (hero only).
-- **Common classes:** `.panel`, `.panel-head`, `.section-head`, `.button.primary|secondary`, `.text-button`, `.tiny-button`, `.field` (inside a `<label>`), `.form-grid(.three)`, `.chip(.on|.static)`, `.item-card` (expandable rows), `.toolbar`, `.modal`, `.thumb-grid`, `.empty-state`, `.danger-text`.
+- **App shell:** above 620px, the shell is viewport-height with a pinned sidebar, and only `.main-area` scrolls under a sticky topbar. At 620px and below, the page scrolls normally and the nav becomes a sticky strip. Breakpoints: 1100 / 900 / 620px.
+- **Tokens:** colours `--bg --panel --line --text --muted --gold --green`. Type scale `--fs-micro` 11 (the minimum) through `--fs-display`. Use tokens, never ad-hoc px.
+- **Common classes:** `.panel`, `.section-head`, `.button.primary|secondary`, `.field` inside `<label>`, `.form-grid(.three)`, `.chip`, `.item-card`, `.modal`, `.proposal`, `.gen-card`, `.status-pill`, `.provider-note`, `.setup-note`, `.error-text`.
 
 ## Coding conventions
 
-- TypeScript strict, no `any`. Validate untrusted JSON through `normalizeProject` rather than trusting shapes.
-- `src/lib/server/*` imports `node:fs`. Import it only from route handlers, never from components.
-- `src/lib/projectModel.ts` and `src/lib/continuity.ts` must stay pure (no DOM, no Node APIs), because both sides use them.
-- New record types or fields: add them to `types.ts`, the factory and `normalizeProject`, and give deletions a cascading `remove*` helper.
-- Activity messages should describe what changed in user terms (`Edited shot 2.1 “Kitchen wide”`).
-- Provider calls happen only server-side, behind adapters. **Never trigger paid GPU inference automatically.**
-- Don't add dependencies casually.
-- Escape apostrophes in JSX text (`&apos;`). Raw `<img>` is used deliberately for local file URLs, with `eslint-disable-next-line @next/next/no-img-element`.
-- Update `docs/PROGRESS.md` when a feature's status changes.
+- TypeScript strict, no `any`. Validate untrusted JSON: `normalizeProject` for projects, `normalizeProposal` for model output, `cleanRef` for uploads to the generation API.
+- `src/lib/server/**` uses Node APIs. Import it only from route handlers. `projectModel.ts`, `continuity.ts`, `proposals.ts` and `ai/types.ts` must stay pure.
+- All project edits go through `ws.mutate(recipe, activity?)`. Put cascades in `projectModel.ts`.
+- New provider: implement the interface in `server/ai/{llm,image,video}.ts` with accurate caps, costs and a `conditioning` description, and add it to `PROVIDERS`. Verify request fields against the provider's current docs.
+- Don't render nested component definitions inside a component (they remount on every render). Use render helpers instead.
+- Escape apostrophes in JSX text. Use raw `<img>` for local file URLs, with an eslint-disable comment.
+- Update `docs/PROGRESS.md` and `docs/PROVIDERS.md` when integrations change.
 
 ## Limitations & unfinished work
 
-- **No image/video generation.** The routes are placeholders. The continuity bundle is ready for adapters, but **visual consistency is not guaranteed** until reference-conditioned generation exists.
-- **Local single-user storage.** There's no database, auth, multi-user support or cloud sync. Data lives in `data/` on the machine running the server, so back it up yourself.
-- **Uploads** are buffered fully in memory (200 MB cap). A file uploaded but never saved into the document (e.g. the tab was closed within the save delay) stays on disk as an orphan, and there's no orphan cleanup.
-- **Export** is JSON only (records + file metadata, not the files). There's **no import** apart from the one-time legacy `localStorage` migration.
-- **Concurrency** is limited to conflict detection (`409` + reload). There's no merging, so the reload discards the local tab's unsaved edits.
-- Shots can only move between scenes via the editor's scene select. There's no drag-and-drop.
-- **Chat:** single-turn (no history sent), not persisted, no streaming. The model name is hard-coded, and the API key is sent as a URL query parameter.
-- Settings provider status is static text. `*_PROVIDER` env vars are unused.
-- Tabs aren't URL routes (no deep links or back-button navigation).
-- No automated tests. No timeline editor, deployment config or realtime voice.
+- **Provider adapters are untested against live accounts.** No keys were configured during development, so each was written against current docs and the first real call is the real test. Cloudflare FLUX.2 form fields come from Cloudflare's changelog examples, because the official schema doesn't list them.
+- **No free video generation exists** among the integrated providers. All video is paid. The self-hosted GPU provider meant to make it cheap isn't built yet.
+- **Consistency is improved, not guaranteed.** There's no LoRA or identity training.
+- Job execution is in-process. A server restart interrupts running jobs (they're marked failed), and there's no cancel button.
+- Chat isn't streamed. The companion only sees the saved project (the client saves first) and the last 24 messages.
+- Voice uses browser APIs (Chrome/Edge are best). There's no realtime speech-to-speech model.
+- Local single-user storage: no auth or cloud sync. Back up `data/` yourself. Export is JSON only, and there's no import. Uploads are buffered in memory (200 MB cap), and files never saved to the document can become orphans.
+- Tabs aren't URL routes. No timeline editor and no automated tests.

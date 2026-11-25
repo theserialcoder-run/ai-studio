@@ -20,6 +20,7 @@ function usagesOf(p: Project, assetId: ID): Usage[] {
     if (l.referenceAssetIds.includes(assetId)) out.push({ key: `l${l.id}`, label: `Location · ${l.name}`, unlink: d => { const x = d.locations.find(y => y.id === l.id); if (x) { x.referenceAssetIds = without(x.referenceAssetIds); if (x.primaryAssetId === assetId) x.primaryAssetId = x.referenceAssetIds[0] ?? null; } } });
     for (const a of l.angles) if (a.assetIds.includes(assetId)) out.push({ key: `a${a.id}`, label: `Location · ${l.name} · ${a.name}`, unlink: d => { const y = d.locations.find(x => x.id === l.id)?.angles.find(x => x.id === a.id); if (y) y.assetIds = without(y.assetIds); } });
   }
+  for (const s of p.shots) if (s.generatedAssetIds.includes(assetId)) out.push({ key: `g${s.id}`, label: `Shot ${shotNumber(p, s)} · generated take`, unlink: d => { const x = d.shots.find(y => y.id === s.id); if (x) x.generatedAssetIds = without(x.generatedAssetIds); } });
   for (const s of p.shots) if (s.assetIds.includes(assetId)) out.push({ key: `s${s.id}`, label: `Shot ${shotNumber(p, s)}${s.title ? ` · ${s.title}` : ""}`, unlink: d => { const x = d.shots.find(y => y.id === s.id); if (x) x.assetIds = without(x.assetIds); } });
   return out;
 }
@@ -33,6 +34,7 @@ function linkAsset(d: Project, target: string, assetId: ID) {
   if (type === "loc") { const l = d.locations.find(x => x.id === a); if (l) { l.referenceAssetIds = add(l.referenceAssetIds); l.primaryAssetId ??= assetId; } }
   if (type === "angle") { const g = d.locations.find(x => x.id === a)?.angles.find(x => x.id === b); if (g) g.assetIds = add(g.assetIds); }
   if (type === "shot") { const s = d.shots.find(x => x.id === a); if (s) s.assetIds = add(s.assetIds); }
+  if (type === "take") { const s = d.shots.find(x => x.id === a); if (s) s.generatedAssetIds = add(s.generatedAssetIds); }
 }
 
 export function AssetLibrary() {
@@ -142,8 +144,13 @@ function AssetDetail({ asset, onClose }: { asset: Asset; onClose: () => void }) 
                 </optgroup>
               )}
               {project.shots.length > 0 && (
-                <optgroup label="Shots">
+                <optgroup label="Shots — reference">
                   {project.shots.map(s => <option key={s.id} value={`shot:${s.id}`}>Shot {shotNumber(project, s)}{s.title ? ` · ${s.title}` : ""}</option>)}
+                </optgroup>
+              )}
+              {project.shots.length > 0 && (
+                <optgroup label="Shots — generated take">
+                  {project.shots.map(s => <option key={s.id} value={`take:${s.id}`}>Shot {shotNumber(project, s)}{s.title ? ` · ${s.title}` : ""}</option>)}
                 </optgroup>
               )}
             </select>

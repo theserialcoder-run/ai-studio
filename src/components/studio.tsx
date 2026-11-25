@@ -3,6 +3,7 @@
 import { createContext, useContext, useId, useRef, useState, type ReactNode } from "react";
 import { assetById, fileUrl, formatBytes } from "@/lib/projectModel";
 import type { Workspace } from "@/lib/client/useWorkspace";
+import type { AiState } from "@/lib/client/useAi";
 import type { Asset, AssetKind, ID, Project } from "@/lib/types";
 
 export const TABS = [
@@ -12,6 +13,7 @@ export type Tab = (typeof TABS)[number];
 
 export interface StudioCtx {
   ws: Workspace;
+  ai: AiState;
   project: Project;
   notify: (message: string) => void;
   go: (tab: Tab) => void;
@@ -21,6 +23,9 @@ export interface StudioCtx {
   /** Scene preselected when opening the shot planner from the script studio. */
   focusSceneId: ID | null;
   setFocusSceneId: (id: ID | null) => void;
+  /** Image to use as source / start frame when Image or Video Studio opens next. */
+  pendingSourceId: ID | null;
+  setPendingSourceId: (id: ID | null) => void;
 }
 
 export const StudioContext = createContext<StudioCtx | null>(null);

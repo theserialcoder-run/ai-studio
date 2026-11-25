@@ -39,7 +39,7 @@ export function makeShot(partial: Partial<Shot> = {}): Shot {
   return {
     id: newId(), sceneId: null, title: "", description: "", cameraAngle: "", cameraMovement: "", framing: "",
     lighting: "", mood: "", durationSec: null, status: "Planning", notes: "", characters: [], locationId: null,
-    locationAngleId: null, assetIds: [], createdAt: t, updatedAt: t, ...partial,
+    locationAngleId: null, assetIds: [], generatedAssetIds: [], createdAt: t, updatedAt: t, ...partial,
   };
 }
 
@@ -85,6 +85,7 @@ export function makeProject(input: { id?: ID; name?: string; logline?: string; s
     locations: [],
     assets: [],
     activity: [],
+    importedGenerationIds: [],
   };
   const script = makeScript({ title: "Main script" });
   project.scripts.push(script);
@@ -163,6 +164,7 @@ export function normalizeProject(raw: unknown): Project {
       } satisfies Asset;
     }),
     activity: arr(r.activity).map(e => ({ id: id(e.id), at: str(e.at, t), message: str(e.message) })).slice(0, MAX_ACTIVITY),
+    importedGenerationIds: strArr(r.importedGenerationIds).slice(-1000),
   };
 
   if (p.scripts.length === 0) p.scripts.push(makeScript({ title: "Main script" }));
@@ -198,7 +200,7 @@ export function normalizeProject(raw: unknown): Project {
       status: SHOT_STATUSES.includes(s.status as ShotStatus) ? (s.status as ShotStatus) : "Planning",
       notes: str(s.notes), characters, locationId,
       locationAngleId: loc && angleId && loc.angles.some(a => a.id === angleId) ? angleId : null,
-      assetIds: strArr(s.assetIds), createdAt: str(s.createdAt, t), updatedAt: str(s.updatedAt, t),
+      assetIds: strArr(s.assetIds), generatedAssetIds: strArr(s.generatedAssetIds), createdAt: str(s.createdAt, t), updatedAt: str(s.updatedAt, t),
     } satisfies Shot;
   });
 
@@ -215,7 +217,7 @@ export function normalizeProject(raw: unknown): Project {
     if (l.primaryAssetId && !assetIds.has(l.primaryAssetId)) l.primaryAssetId = null;
     for (const a of l.angles) a.assetIds = keep(a.assetIds);
   }
-  for (const s of p.shots) s.assetIds = keep(s.assetIds);
+  for (const s of p.shots) { s.assetIds = keep(s.assetIds); s.generatedAssetIds = keep(s.generatedAssetIds); }
   return p;
 }
 
@@ -277,6 +279,7 @@ export function assetUsage(p: Project, assetId: ID): string[] {
     for (const a of l.angles) if (a.assetIds.includes(assetId)) uses.push(`Location: ${l.name} · ${a.name}`);
   }
   for (const s of p.shots) if (s.assetIds.includes(assetId)) uses.push(`Shot ${shotNumber(p, s)}${s.title ? ` · ${s.title}` : ""}`);
+  for (const s of p.shots) if (s.generatedAssetIds.includes(assetId)) uses.push(`Shot ${shotNumber(p, s)} take`);
   return uses;
 }
 
@@ -358,7 +361,10 @@ export function removeAsset(p: Project, assetId: ID) {
     if (l.primaryAssetId === assetId) l.primaryAssetId = l.referenceAssetIds[0] ?? null;
     for (const a of l.angles) a.assetIds = a.assetIds.filter(x => x !== assetId);
   }
-  for (const s of p.shots) s.assetIds = s.assetIds.filter(a => a !== assetId);
+  for (const s of p.shots) {
+    s.assetIds = s.assetIds.filter(a => a !== assetId);
+    s.generatedAssetIds = s.generatedAssetIds.filter(a => a !== assetId);
+  }
 }
 
 /** Split screenplay text into scenes at INT./EXT. sluglines. */

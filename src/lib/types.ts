@@ -67,6 +67,7 @@ export interface Shot {
   locationId: ID | null;
   locationAngleId: ID | null;
   assetIds: ID[]; // extra reference assets (storyboard frames, props, mood images…)
+  generatedAssetIds: ID[]; // AI-generated images/videos ("takes") for this shot
   createdAt: string;
   updatedAt: string;
 }
@@ -140,6 +141,8 @@ export interface Project {
   locations: Location[];
   assets: Asset[];
   activity: ActivityEntry[]; // newest first
+  /** Generation jobs whose outputs were already added to `assets` (prevents re-import after deletion). */
+  importedGenerationIds: ID[];
 }
 
 export interface ProjectSummary {

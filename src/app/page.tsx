@@ -2,10 +2,11 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { useWorkspace } from "@/lib/client/useWorkspace";
+import { useAi } from "@/lib/client/useAi";
 import type { ID } from "@/lib/types";
 import { AssetLibrary } from "@/components/AssetLibrary";
 import { CharacterLibrary } from "@/components/CharacterLibrary";
-import { CompanionView, WELCOME, type ChatMessage } from "@/components/CompanionView";
+import { CompanionView } from "@/components/CompanionView";
 import { DashboardView } from "@/components/DashboardView";
 import { GenerationStudio } from "@/components/GenerationStudio";
 import { LocationLibrary } from "@/components/LocationLibrary";
@@ -22,18 +23,19 @@ const ICONS: Record<Tab, string> = {
 
 export default function Home() {
   const ws = useWorkspace();
+  const ai = useAi(ws);
   const [tab, setTab] = useState<Tab>("Overview");
   const [notice, setNotice] = useState("Workspace · projects are saved on this computer");
-  const [chat, setChat] = useState<ChatMessage[]>([WELCOME]);
   const [focusShotId, setFocusShotId] = useState<ID | null>(null);
   const [focusSceneId, setFocusSceneId] = useState<ID | null>(null);
+  const [pendingSourceId, setPendingSourceId] = useState<ID | null>(null);
 
   const go = useCallback((t: Tab) => setTab(t), []);
   const project = ws.project;
 
   const ctx = useMemo<StudioCtx | null>(() => project ? {
-    ws, project, notify: setNotice, go, focusShotId, setFocusShotId, focusSceneId, setFocusSceneId,
-  } : null, [ws, project, go, focusShotId, focusSceneId]);
+    ws, ai, project, notify: setNotice, go, focusShotId, setFocusShotId, focusSceneId, setFocusSceneId, pendingSourceId, setPendingSourceId,
+  } : null, [ws, ai, project, go, focusShotId, focusSceneId, pendingSourceId]);
 
   // Without an open project only the Projects view is usable.
   const view: Tab = project ? tab : "Projects";
@@ -45,7 +47,6 @@ export default function Home() {
   async function switchProject(id: string) {
     if (!id || id === project?.id) return;
     await ws.openProject(id);
-    setChat([WELCOME]);
     setFocusShotId(null);
     setFocusSceneId(null);
   }
@@ -93,12 +94,12 @@ export default function Home() {
         {ws.status === "loading" && <div className="content"><p className="muted">Loading your workspace…</p></div>}
         {ws.status === "error" && <div className="content"><div className="empty-state">Could not load projects: {ws.loadError}. Check that the dev server is running, then refresh.</div></div>}
 
-        {ws.status === "ready" && view === "Projects" && <ProjectsView ws={ws} notify={setNotice} onOpened={() => { setChat([WELCOME]); setTab("Overview"); }} />}
+        {ws.status === "ready" && view === "Projects" && <ProjectsView ws={ws} notify={setNotice} onOpened={() => setTab("Overview")} />}
 
         {ws.status === "ready" && ctx && (
           <StudioContext.Provider value={ctx}>
             {view === "Overview" && <DashboardView />}
-            {view === "AI Companion" && <CompanionView chat={chat} setChat={setChat} />}
+            {view === "AI Companion" && <CompanionView key={ctx.project.id} />}
             {view === "Script" && <ScriptStudio key={ctx.project.id} />}
             {view === "Shots" && <ShotPlanner key={ctx.project.id} />}
             {view === "Characters" && <CharacterLibrary key={ctx.project.id} />}

@@ -7,12 +7,12 @@ See CLAUDE.md for the full, current description.
 - `src/lib/server/storage.ts` + `src/app/api/projects/**`: file-system persistence (`data/projects/<id>/project.json` + `files/`).
 - `src/lib/client/useWorkspace.ts`: client state, debounced revision-checked saves, uploads.
 - `src/lib/continuity.ts`: builds the continuity bundle sent to generation routes.
-- `src/app/api/chat`: optional Gemini server-side chat integration.
-- `src/app/api/generate/image` and `video`: safe placeholders for provider adapters.
+- `src/lib/server/ai/*`: provider adapters (text, image, video); `src/lib/server/generations.ts`: job runner; `src/lib/server/assistant.ts`: companion + script assistant.
+- `src/lib/proposals.ts`: AI suggestions as reviewable, validated change sets.
 - `.env.local`: secrets; never commit it. `data/`: user data; never commit it.
 
 ## Current continuity implementation
-Characters store identity fields, identity reference images (one primary) and wardrobe/appearance variations with their own images. Locations store fixed details, master references and named camera angles with their own images. Shots link characters (+ variation), a location (+ angle) and extra reference files. `buildContinuityBundle()` turns a shot into a structured payload with reference image URLs. Nothing is generated yet, and consistency is not guaranteed until reference-conditioned generation is implemented.
+Characters store identity fields, identity reference images (one primary) and wardrobe/appearance variations with their own images. Locations store fixed details, master references and named camera angles with their own images. Shots link characters (+ variation), a location (+ angle) and extra reference files. `buildContinuityBundle()` turns a shot into an ordered set of references; the Image/Video Studio sends the selected images to reference-conditioned models (Cloudflare FLUX.2, Gemini Nano Banana, Gemini Omni). This improves consistency but does not guarantee it.
 
 ## Continuity design
 Each project owns a canonical reference library. A character reference should eventually include:

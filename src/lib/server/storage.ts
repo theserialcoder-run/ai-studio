@@ -177,3 +177,40 @@ export async function findFile(projectId: string, assetId: string): Promise<{ fi
 export function dataRoot() {
   return ROOT;
 }
+
+/* ------------------------------------------------------- side documents */
+// Small JSON files next to project.json that the server owns (the client never
+// PUTs them), so they don't conflict with the client's revision-checked saves.
+
+export async function readSideFile<T>(projectId: string, name: "generations" | "conversations", fallback: T): Promise<T> {
+  if (!(await exists(docPath(projectId)))) throw new StorageError("Project not found", 404);
+  try {
+    return JSON.parse(await fs.readFile(path.join(projectDir(projectId), `${name}.json`), "utf8")) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Read-modify-write a side file under the project lock. */
+export async function updateSideFile<T>(projectId: string, name: "generations" | "conversations", fallback: T, fn: (current: T) => T | Promise<T>): Promise<T> {
+  return withLock(`${projectId}:${name}`, async () => {
+    const current = await readSideFile(projectId, name, fallback);
+    const next = await fn(current);
+    await writeAtomic(path.join(projectDir(projectId), `${name}.json`), JSON.stringify(next, null, 2));
+    return next;
+  });
+}
+
+/** Saves generated media into the project's files folder and returns its asset record. */
+export async function saveGeneratedFile(projectId: string, data: Buffer, mimeType: string, displayName: string): Promise<Asset> {
+  if (!(await exists(docPath(projectId)))) throw new StorageError("The project was deleted before the generation finished.", 404);
+  const id = randomUUID();
+  const ext = EXT_BY_MIME[mimeType] ?? (mimeType.startsWith("video/") ? "mp4" : "png");
+  const fileName = `${id}.${ext}`;
+  await fs.mkdir(filesDir(projectId), { recursive: true });
+  await fs.writeFile(path.join(filesDir(projectId), fileName), data);
+  return {
+    id, name: `${displayName}.${ext}`, kind: assetKindFromMime(mimeType), mimeType, size: data.length, fileName,
+    tags: ["generated"], notes: "", createdAt: nowIso(),
+  };
+}

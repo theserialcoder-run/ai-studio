@@ -4,6 +4,7 @@ import {
   makeScene, makeScript, moveWithinGroup, parseScenesFromScreenplay, removeScene, removeScript, sceneNumber, scenesOf, shotsOf,
 } from "@/lib/projectModel";
 import type { ID, Project, Scene } from "@/lib/types";
+import { ScriptAssistant } from "./ScriptAssistant";
 import { EmptyState, RowActions, TextField, useStudio } from "./studio";
 
 export function ScriptStudio() {
@@ -87,6 +88,8 @@ export function ScriptStudio() {
               </span>
             </div>
           </div>
+
+          <ScriptAssistant key={script.id} scriptId={script.id} />
 
           <div className="panel">
             <div className="panel-head"><div><h3>Scenes</h3><p className="muted">Scene order is the order below.</p></div><button className="button primary" onClick={addScene}>Add scene +</button></div>

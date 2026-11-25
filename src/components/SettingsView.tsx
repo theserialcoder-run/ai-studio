@@ -1,5 +1,43 @@
 "use client";
+import type { ProviderInfo } from "@/lib/ai/types";
 import { useStudio } from "./studio";
+
+function ProviderRow({ p, kind, active }: { p: ProviderInfo; kind: string; active?: boolean }) {
+  return (
+    <div className="provider-row">
+      <span className="provider-icon">{kind === "llm" ? "✳" : kind === "image" ? "▧" : "▷"}</span>
+      <div>
+        <b>{p.label}{active ? " · in use" : ""}</b>
+        <small>{p.vendor} · <code>{p.model}</code></small>
+        <small>{p.conditioning}</small>
+        <small>{p.costNote}</small>
+        {!p.configured && <small className="warn-text">Setup: {p.setup}</small>}
+      </div>
+      <span className={`connection-pill${p.configured ? " ok" : " warn"}`}>{p.configured ? (p.billing === "paid" ? "Ready · paid" : "Ready · free tier") : "Not configured"}</span>
+    </div>
+  );
+}
+
+function ProvidersPanel() {
+  const { ai } = useStudio();
+  const prov = ai.providers;
+  return (
+    <div className="panel">
+      <div className="panel-head"><h3>AI providers</h3><button className="text-button" onClick={() => void ai.refreshProviders()}>Refresh</button></div>
+      {ai.providersError && <p className="error-text">{ai.providersError}</p>}
+      {!prov && !ai.providersError && <p className="muted small">Loading…</p>}
+      {prov && <>
+        <span className="field-label">TEXT (COMPANION &amp; SCRIPT ASSISTANT)</span>
+        {prov.llm.map(p => <ProviderRow key={p.id} p={p} kind="llm" active={prov.activeLlm === p.id} />)}
+        <span className="field-label">IMAGE</span>
+        {prov.image.map(p => <ProviderRow key={p.id} p={p} kind="image" />)}
+        <span className="field-label">VIDEO</span>
+        {prov.video.map(p => <ProviderRow key={p.id} p={p} kind="video" />)}
+      </>}
+      <p className="muted small">Keys live only in <code>.env.local</code> on the server (never in the browser). After editing it, restart the server and press Refresh. Paid providers always ask for confirmation before each generation. Full guide: docs/PROVIDERS.md.</p>
+    </div>
+  );
+}
 
 export function exportProjectJson(project: { name: string }) {
   const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json" });
@@ -22,15 +60,9 @@ export function SettingsView() {
           <label>PROJECT NAME<input className="field" value={project.name} onChange={e => ws.mutate(d => { d.name = e.target.value; }, "Edited project settings")} /></label>
           <label>LOGLINE<input className="field" value={project.logline} onChange={e => ws.mutate(d => { d.logline = e.target.value; }, "Edited project settings")} placeholder="A one-sentence summary of your film" /></label>
           <label>VISUAL STYLE / STYLE BIBLE<textarea className="field textarea-small" value={project.style} onChange={e => ws.mutate(d => { d.style = e.target.value; }, "Edited the style bible")} /></label>
-          <p className="muted small">The style bible is included in every image and video continuity request.</p>
+          <p className="muted small">The style bible is included in prepared image and video prompts.</p>
         </div>
-        <div className="panel">
-          <h3>Provider connections</h3>
-          <div className="provider-row"><span className="provider-icon">✳</span><div><b>Google Gemini</b><small>Chat and script assistance</small></div><span className="connection-pill">API key optional</span></div>
-          <div className="provider-row"><span className="provider-icon">▧</span><div><b>Image provider</b><small>Connect a compatible hosted inference API</small></div><span className="connection-pill">Not connected</span></div>
-          <div className="provider-row"><span className="provider-icon">▷</span><div><b>Video provider</b><small>Connect a hosted video model API</small></div><span className="connection-pill">Not connected</span></div>
-          <p className="muted small">Set keys in .env.local. Read docs/PROVIDERS.md before connecting a provider.</p>
-        </div>
+        <ProvidersPanel />
       </div>
       <div className="panel danger-zone">
         <h3>Project data</h3>

@@ -121,6 +121,7 @@ function ShotCard({ project, shot, editing, onToggle }: { project: Project; shot
             })}
             {location ? <span className="chip static">⌂ {location.name}{angle ? ` · ${angle.name}` : ""}</span> : <span className="chip static warn">No location linked</span>}
             {shot.assetIds.length > 0 && <span className="chip static">▧ {shot.assetIds.length} shot refs</span>}
+            {shot.generatedAssetIds.length > 0 && <span className="chip static on">✦ {shot.generatedAssetIds.length} generated take{shot.generatedAssetIds.length === 1 ? "" : "s"}</span>}
           </div>
         </div>
         <div className="shot-actions">
@@ -167,6 +168,15 @@ function ShotCard({ project, shot, editing, onToggle }: { project: Project; shot
 
           <h4 className="sub-head">Continuity references</h4>
           <ContinuityPicker value={shot} onChange={patch => edit(patch, `Updated continuity for ${name}`)} />
+
+          <h4 className="sub-head">Generated takes</h4>
+          {shot.generatedAssetIds.length === 0
+            ? <p className="muted small">Nothing generated yet. Use Image studio or Video studio above.</p>
+            : <ReferenceImages
+                assetIds={shot.generatedAssetIds} kinds={["image", "video"]} accept="image/*,video/*" activity={`Updated generated takes for ${name}`}
+                link={(d, ids) => { const s = d.shots.find(x => x.id === shot.id); if (s) s.generatedAssetIds = [...new Set([...s.generatedAssetIds, ...ids])]; }}
+                unlink={(d, id) => { const s = d.shots.find(x => x.id === shot.id); if (s) s.generatedAssetIds = s.generatedAssetIds.filter(a => a !== id); }}
+              />}
 
           <h4 className="sub-head">Shot reference files</h4>
           <p className="muted small">Storyboard frames, mood images or clips specific to this shot.</p>
