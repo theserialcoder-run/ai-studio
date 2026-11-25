@@ -18,7 +18,7 @@ export interface AudioProvider {
 
 interface Pcm { sampleRate: number; channels: number; data: Buffer } // 16-bit signed LE
 
-function parseWav(buf: Buffer): Pcm {
+export function parseWav(buf: Buffer): Pcm {
   if (buf.toString("ascii", 0, 4) !== "RIFF" || buf.toString("ascii", 8, 12) !== "WAVE") throw new ProviderError("Provider returned audio that is not a WAV file.", 502);
   let off = 12, sampleRate = 24000, channels = 1, bits = 16;
   let data: Buffer | null = null;

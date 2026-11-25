@@ -2,7 +2,8 @@
 import type { LlmProviderInfo } from "../../ai/types";
 import { env, errorDetail, explainHttpError, fetchOrThrow, ProviderError } from "./http";
 
-export interface LlmMessage { role: "user" | "assistant"; content: string }
+/** `images` (base64 JPEG/PNG) are sent with the message to vision-capable models. */
+export interface LlmMessage { role: "user" | "assistant"; content: string; images?: { mimeType: string; data: string }[] }
 export interface LlmRequest { system: string; messages: LlmMessage[]; json?: boolean; maxTokens?: number }
 
 interface LlmProvider { info(): LlmProviderInfo; chat(req: LlmRequest): Promise<string> }
@@ -29,7 +30,10 @@ const gemini: LlmProvider = {
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
-        contents: messages.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
+        contents: messages.map(m => ({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: m.content }, ...(m.images ?? []).map(i => ({ inline_data: { mime_type: i.mimeType, data: i.data } }))],
+        })),
         generationConfig: { maxOutputTokens: maxTokens ?? 8192, ...(json ? { responseMimeType: "application/json" } : {}) },
       }),
     });
@@ -66,7 +70,12 @@ const openaiCompatible: LlmProvider = {
       body: JSON.stringify({
         model: i.model,
         max_tokens: maxTokens ?? 8192,
-        messages: [{ role: "system", content: system + (json ? "\nRespond with a single JSON object only." : "") }, ...messages],
+        messages: [
+          { role: "system", content: system + (json ? "\nRespond with a single JSON object only." : "") },
+          ...messages.map(m => (m.images?.length
+            ? { role: m.role, content: [{ type: "text", text: m.content }, ...m.images.map(i => ({ type: "image_url", image_url: { url: `data:${i.mimeType};base64,${i.data}` } }))] }
+            : { role: m.role, content: m.content })),
+        ],
       }),
     }).catch(e => { throw new ProviderError(`Could not reach ${i.vendor}: ${e.message}`, 502); });
     if (!res.ok) throw explainHttpError(i.vendor, res.status, errorDetail(await res.text()));

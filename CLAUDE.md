@@ -74,6 +74,7 @@ src/
       projects/[id]/conversations/   GET · POST; [cid] PATCH/DELETE; [cid]/messages POST (chat turn)
       projects/[id]/assist/          POST script-assistant task → proposals
       comfyui/route.ts               GET status (?check=1 contacts ComfyUI) · PUT {url, authHeader?, clearAuth?}
+      projects/[id]/storycuts/       jobs GET/POST (detect|describe|render) · story POST · script POST {action: cast|match} · frames/[name] GET
       providers/route.ts             GET provider registry (status + capabilities, no secrets)
   components/
     studio.tsx                       StudioContext/useStudio, TABS, shared UI (fields, Modal, AssetPreview, ReferenceImages…)
@@ -82,12 +83,14 @@ src/
     ScriptStudio.tsx, ScriptAssistant.tsx
     ShotPlanner.tsx, ContinuityPicker.tsx, CharacterLibrary.tsx, LocationLibrary.tsx, AssetLibrary.tsx
     GenerationStudio.tsx             Image/Video Studio: provider, shot/refs, source/start frame, settings, jobs
+    StoryCutStudio.tsx               Story Cuts: footage → scenes → AI descriptions → AI story → voice + MP4 render
     VoiceStudio.tsx                  Text-to-speech: engine/voice, speed or style, text from scenes, shot link, history
     DashboardView.tsx, ProjectsView.tsx, SettingsView.tsx (incl. AI providers panel)
   lib/
     types.ts                         Domain types
     projectModel.ts                  PURE: factories, normalizeProject, selectors, cascading mutations
     continuity.ts                    PURE: ContinuityBundle + prompt text for a shot / manual selection
+    storyCut.ts                      PURE: story styles, word budget (2.4 words/s × speed), StoryJob types
     proposals.ts                     PURE: Proposal types, normalizeProposal(s), applyProposal, chat-block parsing
     ai/types.ts                      Shared AI types (caps, provider info, GenerationRequest/Record, Conversation)
     client/api.ts, client/useWorkspace.ts, client/legacy.ts
@@ -99,7 +102,11 @@ src/
     server/ai/llm.ts                 Gemini generateContent + OpenAI-compatible; chat()
     server/ai/image.ts               Cloudflare FLUX.2 klein/dev, FLUX.1 schnell, Gemini image (Interactions API)
     server/ai/comfyui.ts             ComfyUI on your GPU: Z-Image Turbo + Qwen-Image-Edit workflows, /object_info model check, upload/queue/history/view, status check
-    server/settings.ts               data/settings.json (ComfyUI address + optional auth header), sync cached read
+    server/media.ts                  ffmpeg/ffprobe via spawn (no shell): probe, scene detection, keyframes, 1080p render + concat
+    server/storycut.ts               Story Cut jobs (detect/describe/render, one at a time), writeStory, keyframe paths
+    server/settings.ts               data/projects/<id>/storycuts.json        Story Cut job records (server-owned)
+data/projects/<id>/cache/                keyframes, cached voice lines, render temp (derived; safe to delete)
+data/settings.json (ComfyUI address + optional auth header), sync cached read
     server/ai/video.ts               Gemini Omni Flash (Interactions API), fal.ai queue (Kling/Wan)
     server/ai/audio.ts               TTS: Kokoro (local, lazy-loaded, 1 job at a time, idle unload) + Gemini TTS; WAV utils
     server/generations.ts            Job validation (caps, paid approval), background runner, records
@@ -126,6 +133,7 @@ data/models/                             Kokoro model cache (downloaded on first
 
 ## Data model highlights (`src/lib/types.ts`)
 
+- Story cuts: `project.storyCuts[]` with `mode` (`story`: AI writes narration per scene; `script`: user script → `cast` + `lines[]` each pointing at a chosen scene with AI `options`), `sources` (video assets + optional range), `segments` (array order = edit order; start/end in the source, keyframes, description, narration, skip), voice settings, `filmVolume`, `outputAssetIds`. Job results (scenes, descriptions, renders) are imported by `useStoryCuts` once, tracked in `importedGenerationIds`.
 - Project: `scripts`, `scenes` (array order = scene order per script), `shots` (array order = shot order per scene), `characters` (+ `variations`), `locations` (+ `angles`), `assets`, `activity`, `importedGenerationIds`.
 - Shot: camera fields, `characters: {characterId, variationId}[]`, `locationId`, `locationAngleId`, `assetIds` (references), and `generatedAssetIds` (AI takes).
 - Shot and scene numbers are derived (`shotNumber`, `sceneNumber`). Never store them.
@@ -139,6 +147,7 @@ data/models/                             Kokoro model cache (downloaded on first
   - Kokoro gotcha: `kokoro-js` 1.2.x `stream(string)` never finishes, because it doesn't close its splitter. Always pass a closed `TextSplitterStream`.
   - fp32 is the default dtype because it was ~2× faster than q8 on the dev CPU (no VNNI).
 - **ComfyUI:** API-format graphs built in `comfyui.ts`. Before each job it fetches `/object_info/<Class>` to check model files exist and to fill defaults for required inputs newer ComfyUI versions add (`fillDefaults`). Progress comes from polling `/queue` + `/history`. It never starts/stops pods. Verify node names against the official templates in Comfy-Org/workflow_templates when changing workflows.
+- **Story Cuts** need ffmpeg on the machine (`sudo apt install ffmpeg`, or `FFMPEG_PATH`/`FFPROBE_PATH`); the UI shows setup if missing. Jobs run one at a time (RAM). Scene description sends keyframes to the active LLM as images (`LlmMessage.images`: Gemini `inline_data`, OpenAI-compatible `image_url`). Render (`clipsFor`): story mode — each scene lasts max(scene, voice + 0.5 s); script mode — each line's clip follows the voice (min 2 s), continuing into later footage if the voice is longer; 1920×1080 pad, 30 fps, libx264 veryfast CRF 21, AAC; silent sources get a silent track; parts joined with the concat demuxer.
 - **Long calls** (Gemini image/video) use `postJsonLong` (`node:https`, up to 20 min), because undici `fetch` has a 5-minute header timeout. fal.ai uses its queue (submit → poll `status_url` → `response_url`). Gemini Omni uses `delivery: "uri"`, then polls Files API state and downloads.
 - **Text:** `chat()` uses `LLM_PROVIDER`, or else the first configured provider (Gemini, then OpenAI-compatible). The companion sends the last 24 messages plus a live project context (`projectContext`, IDs included, ~40k chars max). The client calls `ws.saveNow()` before chat and assist so the server reads current data.
 - **Proposals:** the companion appends a ` ```wonderboy {"proposals":[…]} ``` ` block, and the assistant returns JSON. Both go through `normalizeProposal` (IDs validated against the project). `applyProposal` never deletes. A script replacement needs `replace: true`, which the UI sends only after `confirm()`. Scene updates and logline replacement also ask for confirmation.
@@ -182,6 +191,7 @@ No auth (single local user). Environment variables are documented in `.env.examp
 
 - **Provider adapters are untested against live accounts.** No keys were configured during development, so each was written against current docs and the first real call is the real test. Cloudflare FLUX.2 form fields come from Cloudflare's changelog examples, because the official schema doesn't list them.
 - **No free video generation exists** among the integrated providers. All video is paid. ComfyUI video (Wan 2.2) on the rented GPU isn't built yet.
+- **Story Cuts:** the AI sees only 1–2 keyframes per scene, so descriptions can be wrong (they're editable). Detection/render speed on the dev laptop is slow for long films (use a range). Footage rights are the user's responsibility; the UI recommends stock/public-domain footage.
 - **ComfyUI providers are untested on a real GPU** (only against a simulated server). Wonderboy can't start/stop the pod or meter its cost yet, so the user must stop it on RunPod. ComfyUI has no auth; the RunPod proxy URL is the only protection.
 - **Consistency is improved, not guaranteed.** There's no LoRA or identity training.
 - Job execution is in-process. A server restart interrupts running jobs (they're marked failed), and there's no cancel button.

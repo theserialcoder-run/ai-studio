@@ -125,6 +125,59 @@ export interface ActivityEntry {
   message: string;
 }
 
+/* ------------------------------------------------------------- Story Cuts */
+// A narrated edit: existing footage (stock / public-domain films) cut into scenes,
+// with a new AI-written story told over them by a voiceover.
+
+export interface StoryCutSource {
+  assetId: ID; // a video asset
+  start: number | null; // optional range in seconds (long films)
+  end: number | null;
+}
+
+export interface StoryCutSegment {
+  id: ID;
+  assetId: ID; // source video
+  start: number; // seconds in the source
+  end: number;
+  frames: string[]; // keyframe names in the project's cache (GET …/storycuts/frames/<name>)
+  description: string; // what is on screen (AI or user)
+  narration: string; // voiceover for this segment ("" = pause)
+  skip: boolean;
+}
+
+/** Script mode: one narration line shown over one chosen scene. */
+export interface StoryCutLine {
+  id: ID;
+  text: string; // narration
+  sceneId: ID | null; // chosen segment (from `segments`)
+  options: ID[]; // AI-suggested alternatives, best first
+}
+
+export interface StoryCastMember {
+  name: string; // character in the user's script
+  look: string; // how they appear in the footage, e.g. "old man in a grey coat"
+}
+
+export interface StoryCut {
+  id: ID;
+  title: string;
+  /** "story": AI writes a story for the scenes in order. "script": the user's script, AI picks a scene per line. */
+  mode: "story" | "script";
+  script: string;
+  cast: StoryCastMember[];
+  lines: StoryCutLine[]; // script mode timeline (array order = edit order)
+  sources: StoryCutSource[];
+  style: string; // preset id or "custom"
+  instructions: string; // extra story direction
+  voice: { providerId: string; voice: string; speed: number };
+  filmVolume: number; // 0–1, original audio level under the voice
+  segments: StoryCutSegment[]; // array order = edit order
+  outputAssetIds: ID[]; // rendered videos, newest last
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Project {
   schemaVersion: number;
   id: ID;
@@ -143,6 +196,7 @@ export interface Project {
   activity: ActivityEntry[]; // newest first
   /** Generation jobs whose outputs were already added to `assets` (prevents re-import after deletion). */
   importedGenerationIds: ID[];
+  storyCuts: StoryCut[];
 }
 
 export interface ProjectSummary {

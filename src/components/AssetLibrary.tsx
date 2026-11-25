@@ -22,6 +22,10 @@ function usagesOf(p: Project, assetId: ID): Usage[] {
   }
   for (const s of p.shots) if (s.generatedAssetIds.includes(assetId)) out.push({ key: `g${s.id}`, label: `Shot ${shotNumber(p, s)} · generated take`, unlink: d => { const x = d.shots.find(y => y.id === s.id); if (x) x.generatedAssetIds = without(x.generatedAssetIds); } });
   for (const s of p.shots) if (s.assetIds.includes(assetId)) out.push({ key: `s${s.id}`, label: `Shot ${shotNumber(p, s)}${s.title ? ` · ${s.title}` : ""}`, unlink: d => { const x = d.shots.find(y => y.id === s.id); if (x) x.assetIds = without(x.assetIds); } });
+  for (const c of p.storyCuts) {
+    if (c.sources.some(s => s.assetId === assetId)) out.push({ key: `sc${c.id}`, label: `Story cut · ${c.title} (footage; unlinking removes its scenes)`, unlink: d => { const x = d.storyCuts.find(y => y.id === c.id); if (x) { x.sources = x.sources.filter(s => s.assetId !== assetId); x.segments = x.segments.filter(s => s.assetId !== assetId); } } });
+    if (c.outputAssetIds.includes(assetId)) out.push({ key: `so${c.id}`, label: `Story cut · ${c.title} (render)`, unlink: d => { const x = d.storyCuts.find(y => y.id === c.id); if (x) x.outputAssetIds = without(x.outputAssetIds); } });
+  }
   return out;
 }
 

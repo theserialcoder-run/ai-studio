@@ -4,6 +4,7 @@ import {
   SCHEMA_VERSION, SHOT_STATUSES,
   type Asset, type AssetKind, type Character, type CharacterVariation, type ID, type Location, type LocationAngle,
   type Project, type ProjectSummary, type Scene, type Script, type Shot, type ShotCharacterRef, type ShotStatus,
+  type StoryCut,
 } from "./types";
 
 export const DEFAULT_STYLE =
@@ -67,6 +68,15 @@ export function makeAngle(partial: Partial<LocationAngle> = {}): LocationAngle {
   return { id: newId(), name: "New angle", description: "", assetIds: [], ...partial };
 }
 
+export function makeStoryCut(partial: Partial<StoryCut> = {}): StoryCut {
+  const t = nowIso();
+  return {
+    id: newId(), title: "Untitled story", mode: "story", script: "", cast: [], lines: [], sources: [], style: "life-lesson", instructions: "",
+    voice: { providerId: "kokoro", voice: "af_heart", speed: 1 }, filmVolume: 0.15, segments: [], outputAssetIds: [],
+    createdAt: t, updatedAt: t, ...partial,
+  };
+}
+
 export function makeProject(input: { id?: ID; name?: string; logline?: string; style?: string; starter?: boolean }): Project {
   const t = nowIso();
   const project: Project = {
@@ -86,6 +96,7 @@ export function makeProject(input: { id?: ID; name?: string; logline?: string; s
     assets: [],
     activity: [],
     importedGenerationIds: [],
+    storyCuts: [],
   };
   const script = makeScript({ title: "Main script" });
   project.scripts.push(script);
@@ -112,6 +123,9 @@ const strOrNull = (v: unknown): string | null => (typeof v === "string" && v ? v
 const strArr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const arr = (v: unknown): Record<string, unknown>[] =>
   Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => !!x && typeof x === "object") : [];
+const num = (v: unknown, fallback: number): number => (typeof v === "number" && isFinite(v) ? v : fallback);
+const numOrNull = (v: unknown): number | null => (typeof v === "number" && isFinite(v) && v >= 0 ? v : null);
+const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 const id = (v: unknown): ID => (typeof v === "string" && v ? v : newId());
 
 export function assetKindFromMime(mime: string): AssetKind {
@@ -165,6 +179,7 @@ export function normalizeProject(raw: unknown): Project {
     }),
     activity: arr(r.activity).map(e => ({ id: id(e.id), at: str(e.at, t), message: str(e.message) })).slice(0, MAX_ACTIVITY),
     importedGenerationIds: strArr(r.importedGenerationIds).slice(-1000),
+    storyCuts: [],
   };
 
   if (p.scripts.length === 0) p.scripts.push(makeScript({ title: "Main script" }));
@@ -218,6 +233,36 @@ export function normalizeProject(raw: unknown): Project {
     for (const a of l.angles) a.assetIds = keep(a.assetIds);
   }
   for (const s of p.shots) { s.assetIds = keep(s.assetIds); s.generatedAssetIds = keep(s.generatedAssetIds); }
+
+  p.storyCuts = arr(r.storyCuts).map(c => {
+    const v = (c.voice && typeof c.voice === "object" ? c.voice : {}) as Record<string, unknown>;
+    const segIds = new Set(arr(c.segments).filter(s => assetIds.has(str(s.assetId))).map(s => str(s.id)));
+    return {
+      id: id(c.id), title: str(c.title, "Untitled story"),
+      mode: c.mode === "script" ? "script" : "story",
+      script: str(c.script),
+      cast: arr(c.cast).map(m => ({ name: str(m.name), look: str(m.look) })).filter(m => m.name || m.look).slice(0, 30),
+      lines: arr(c.lines).map(l => ({
+        id: id(l.id), text: str(l.text),
+        sceneId: segIds.has(str(l.sceneId)) ? str(l.sceneId) : null,
+        options: strArr(l.options).filter(o => segIds.has(o)).slice(0, 5),
+      })),
+      sources: arr(c.sources).filter(s => assetIds.has(str(s.assetId))).map(s => ({ assetId: str(s.assetId), start: numOrNull(s.start), end: numOrNull(s.end) })),
+      style: str(c.style, "life-lesson"), instructions: str(c.instructions),
+      voice: { providerId: str(v.providerId, "kokoro"), voice: str(v.voice, "af_heart"), speed: clamp(num(v.speed, 1), 0.5, 2) },
+      filmVolume: clamp(num(c.filmVolume, 0.15), 0, 1),
+      segments: arr(c.segments).filter(s => assetIds.has(str(s.assetId))).map(s => {
+        const start = Math.max(0, num(s.start, 0));
+        return {
+          id: id(s.id), assetId: str(s.assetId), start, end: Math.max(start + 0.1, num(s.end, start + 1)),
+          frames: strArr(s.frames).filter(f => /^[A-Za-z0-9_-]{1,80}\.jpg$/.test(f)).slice(0, 4),
+          description: str(s.description), narration: str(s.narration), skip: s.skip === true,
+        };
+      }),
+      outputAssetIds: keep(strArr(c.outputAssetIds)),
+      createdAt: str(c.createdAt, t), updatedAt: str(c.updatedAt, t),
+    } satisfies StoryCut;
+  });
   return p;
 }
 
@@ -280,6 +325,10 @@ export function assetUsage(p: Project, assetId: ID): string[] {
   }
   for (const s of p.shots) if (s.assetIds.includes(assetId)) uses.push(`Shot ${shotNumber(p, s)}${s.title ? ` · ${s.title}` : ""}`);
   for (const s of p.shots) if (s.generatedAssetIds.includes(assetId)) uses.push(`Shot ${shotNumber(p, s)} take`);
+  for (const c of p.storyCuts) {
+    if (c.sources.some(s => s.assetId === assetId)) uses.push(`Story cut: ${c.title} (footage)`);
+    if (c.outputAssetIds.includes(assetId)) uses.push(`Story cut: ${c.title} (render)`);
+  }
   return uses;
 }
 
@@ -364,6 +413,16 @@ export function removeAsset(p: Project, assetId: ID) {
   for (const s of p.shots) {
     s.assetIds = s.assetIds.filter(a => a !== assetId);
     s.generatedAssetIds = s.generatedAssetIds.filter(a => a !== assetId);
+  }
+  for (const c of p.storyCuts) {
+    c.sources = c.sources.filter(s => s.assetId !== assetId);
+    c.segments = c.segments.filter(s => s.assetId !== assetId);
+    const segIds = new Set(c.segments.map(s => s.id));
+    for (const l of c.lines) {
+      if (l.sceneId && !segIds.has(l.sceneId)) l.sceneId = null;
+      l.options = l.options.filter(o => segIds.has(o));
+    }
+    c.outputAssetIds = c.outputAssetIds.filter(a => a !== assetId);
   }
 }
 
