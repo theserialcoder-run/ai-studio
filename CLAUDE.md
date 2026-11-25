@@ -52,6 +52,7 @@ npm run build
 npm start
 ```
 
+- **Desktop launcher (Linux):** `scripts/install-launcher.sh` installs `wonderboy.desktop` (menu + desktop) that runs `scripts/start-wonderboy.sh`: loads nvm's Node, rebuilds only if `src/`, `package.json` or `next.config.ts` is newer than `.next/BUILD_ID`, runs `next start` in the foreground (closing the terminal stops it), and opens the browser when ready. Port via `WONDERBOY_PORT`.
 - **Tests:** there's no test suite. Verify with `npx tsc --noEmit`, `npm run lint` and `npm run build`. For API/storage changes, run a short `curl` smoke test against `npm start` with `WONDERBOY_DATA_DIR` set to a temp folder.
   - Start the server with `node_modules/.bin/next start`, not `npx` (killing `npx` leaves the server running), and confirm port 3000/3123 is free afterwards.
   - **Never** call paid providers in tests. Fake credentials are fine for exercising error paths.
