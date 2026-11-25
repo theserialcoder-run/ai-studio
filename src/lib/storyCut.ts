@@ -1,5 +1,5 @@
 // PURE helpers for Story Cuts, shared by the browser and the server.
-import type { Asset, ID, StoryCutSegment } from "./types";
+import type { Asset, ID, StoryCastMember, StoryCutLine, StoryCutSegment } from "./types";
 
 export interface StoryStyle { id: string; label: string; footage: string; prompt: string }
 
@@ -43,7 +43,8 @@ export function formatTime(seconds: number): string {
 
 /* ---------------------------------------------------------------- jobs */
 
-export type StoryJobKind = "detect" | "describe" | "render";
+/** "auto" = script mode in one go: detect (if needed) → describe → cast (if empty) → match. */
+export type StoryJobKind = "detect" | "describe" | "render" | "auto";
 
 export interface StoryJob {
   id: ID;
@@ -61,6 +62,10 @@ export interface StoryJob {
   descriptions?: Record<ID, string>;
   /** render: the finished video. */
   output?: Asset;
+  /** auto: the suggested cast (only when the cut had none). */
+  cast?: StoryCastMember[];
+  /** auto: the script timeline. */
+  lines?: StoryCutLine[];
 }
 
 export type StoryJobView = StoryJob & { progress: string | null };

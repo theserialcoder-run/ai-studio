@@ -6,7 +6,7 @@ import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { nowIso } from "../projectModel";
 import { segmentLength, styleById, wordBudget, type StoryDraft, type StoryJob, type StoryJobKind, type StoryJobView } from "../storyCut";
-import type { ID, StoryCut, StoryCutSegment } from "../types";
+import type { ID, StoryCut, StoryCutLine, StoryCutSegment } from "../types";
 import { audioProvider, parseWav } from "./ai/audio";
 import { ProviderError } from "./ai/http";
 import { activeLlm, chat } from "./ai/llm";
@@ -51,12 +51,16 @@ async function loadCut(projectId: string, cutId: string): Promise<StoryCut> {
 }
 
 /** Validates and queues a background job. */
-export async function startStoryJob(projectId: string, body: { kind?: unknown; cutId?: unknown; overwrite?: unknown; sensitivity?: unknown }): Promise<StoryJob> {
+export async function startStoryJob(projectId: string, body: { kind?: unknown; cutId?: unknown; overwrite?: unknown; sensitivity?: unknown; rescan?: unknown }): Promise<StoryJob> {
   const kind = body.kind as StoryJobKind;
-  if (!["detect", "describe", "render"].includes(kind)) bad("kind must be detect, describe or render.");
+  if (!["detect", "describe", "render", "auto"].includes(kind)) bad("kind must be detect, describe, render or auto.");
   const cut = await loadCut(projectId, String(body.cutId ?? ""));
   if (kind !== "describe") { const t = await mediaTools(); if (!t.ok) bad(t.error!); }
-  if (kind === "detect" && !cut.sources.length) bad("Add at least one video first.");
+  if ((kind === "detect" || kind === "auto") && !cut.sources.length) bad("Add your film (or clips) first.");
+  if (kind === "auto") {
+    if (!cut.script.trim()) bad("Paste your script first.");
+    if (!activeLlm()) bad("Finding clips needs the AI. Set GEMINI_API_KEY in .env.local (free at aistudio.google.com), then restart Wonderboy.");
+  }
   if (kind === "describe") {
     if (!cut.segments.some(s => s.frames.length)) bad("Detect scenes first.");
     if (!activeLlm()) bad("Describing scenes needs an AI text model that can see images. Set GEMINI_API_KEY in .env.local (free tier) and restart.");
@@ -74,6 +78,10 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
   }
   const existing = (await readSideFile<StoryJob[]>(projectId, "storycuts", [])).find(j => j.status === "running" && j.cutId === cut.id && j.kind === kind && active.has(j.id));
   if (existing) bad("This step is already running for this story.", 409);
+  if (kind === "auto" || kind === "detect" || kind === "describe") {
+    const busyCut = (await readSideFile<StoryJob[]>(projectId, "storycuts", [])).find(j => j.status === "running" && j.cutId === cut.id && j.kind !== "render" && active.has(j.id));
+    if (busyCut) bad("Another step is still working on this story. Wait for it to finish.", 409);
+  }
 
   const job: StoryJob = {
     id: randomUUID(), kind, cutId: cut.id, cutTitle: cut.title, status: "running", error: null, notes: "", createdAt: nowIso(), finishedAt: null,
@@ -82,6 +90,7 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
   active.set(job.id, "Waiting for the previous job to finish…");
   const sensitivity = typeof body.sensitivity === "number" ? Math.min(0.6, Math.max(0.1, body.sensitivity)) : 0.3;
   const overwrite = body.overwrite === true;
+  const rescan = body.rescan === true;
 
   chain = chain.then(async () => {
     const progress = (m: string) => active.set(job.id, m);
@@ -90,6 +99,7 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
       if (kind === "detect") await runDetect(projectId, fresh, job, sensitivity, progress);
       if (kind === "describe") await runDescribe(projectId, fresh, job, overwrite, progress);
       if (kind === "render") await runRender(projectId, fresh, job, progress);
+      if (kind === "auto") await runAuto(projectId, fresh, job, sensitivity, rescan, progress);
     } catch (e) {
       const message = e instanceof ProviderError || e instanceof StorageError ? e.message : `Unexpected error: ${e instanceof Error ? e.message : String(e)}`;
       if (!(e instanceof ProviderError)) console.error(e);
@@ -104,6 +114,13 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
 /* ---------------------------------------------------------------- detect */
 
 async function runDetect(projectId: string, cut: StoryCut, job: StoryJob, sensitivity: number, progress: (m: string) => void) {
+  const segments = await detectSegments(projectId, cut, sensitivity, progress);
+  const total = segments.reduce((n, s) => n + segmentLength(s), 0);
+  await patch(projectId, job.id, { status: "succeeded", segments, notes: `${segments.length} scenes, ${Math.round(total)} s of footage.`, finishedAt: nowIso() });
+}
+
+/** Finds scenes in the cut's sources and saves keyframes. Deletes the cut's old keyframes. */
+async function detectSegments(projectId: string, cut: StoryCut, sensitivity: number, progress: (m: string) => void): Promise<StoryCutSegment[]> {
   // Higher "sensitivity" in the UI = more cuts = lower ffmpeg scene threshold.
   const threshold = Math.round((0.7 - sensitivity) * 100) / 100;
   const found: (StoryCutSegment & { file: string })[] = [];
@@ -133,8 +150,7 @@ async function runDetect(projectId: string, cut: StoryCut, job: StoryJob, sensit
   const segments: StoryCutSegment[] = found.map(s => ({ id: s.id, assetId: s.assetId, start: s.start, end: s.end, frames: s.frames, description: "", narration: "", skip: false }));
   // Old keyframes of this cut are no longer referenced once the client imports the new scenes.
   for (const s of cut.segments) for (const fr of s.frames) { const p = framePath(projectId, fr); if (p) await fs.rm(p, { force: true }); }
-  const total = segments.reduce((n, s) => n + segmentLength(s), 0);
-  await patch(projectId, job.id, { status: "succeeded", segments, notes: `${segments.length} scenes, ${Math.round(total)} s of footage.`, finishedAt: nowIso() });
+  return segments;
 }
 
 /* -------------------------------------------------------------- describe */
@@ -156,11 +172,23 @@ Never identify real people, actors or the film. Refer to people by appearance ("
 Return JSON only: {"scenes":[{"scene":<number>,"description":"…"}]}`;
 
 async function runDescribe(projectId: string, cut: StoryCut, job: StoryJob, overwrite: boolean, progress: (m: string) => void) {
-  const targets = cut.segments.filter(s => s.frames.length && (overwrite || !s.description.trim()));
-  if (!targets.length) {
+  const r = await describeSegments(projectId, cut.segments, overwrite, progress, d => patch(projectId, job.id, { descriptions: d }));
+  if (r.targets === 0) {
     await patch(projectId, job.id, { status: "succeeded", descriptions: {}, notes: "Every scene already has a description.", finishedAt: nowIso() });
     return;
   }
+  const n = Object.keys(r.descriptions).length;
+  const missed = r.targets - n;
+  await patch(projectId, job.id, {
+    status: "succeeded", descriptions: r.descriptions, finishedAt: nowIso(),
+    notes: `Described ${n} scenes with ${r.provider}.${missed ? ` ${missed} came back empty; describe them yourself or run again.` : ""}`,
+  });
+}
+
+/** Describes scenes without a description (or all, with `overwrite`) from their keyframes, in batches. */
+async function describeSegments(projectId: string, segments: StoryCutSegment[], overwrite: boolean, progress: (m: string) => void, onBatch: (d: Record<ID, string>) => Promise<void>): Promise<{ descriptions: Record<ID, string>; provider: string; targets: number }> {
+  const targets = segments.filter(s => s.frames.length && (overwrite || !s.description.trim()));
+  if (!targets.length) return { descriptions: {}, provider: "", targets: 0 };
   const descriptions: Record<ID, string> = {};
   const batches = Math.ceil(targets.length / DESCRIBE_BATCH);
   let provider = "";
@@ -190,20 +218,16 @@ async function runDescribe(projectId: string, cut: StoryCut, job: StoryJob, over
         const idx = Number(sc.scene) - 1;
         if (batch[idx] && typeof sc.description === "string" && sc.description.trim()) descriptions[batch[idx].id] = sc.description.trim().slice(0, 800);
       }
-      await patch(projectId, job.id, { descriptions });
+      await onBatch({ ...descriptions });
     }
   } catch (e) {
     if (Object.keys(descriptions).length) {
       const msg = e instanceof Error ? e.message : String(e);
-      throw new ProviderError(`${msg} (${Object.keys(descriptions).length} of ${targets.length} scenes were described and kept; run it again to finish.)`, 502);
+      throw new ProviderError(`${msg} (${Object.keys(descriptions).length} of ${targets.length} scenes were described and kept; run it again to continue.)`, 502);
     }
     throw e;
   }
-  const missed = targets.length - Object.keys(descriptions).length;
-  await patch(projectId, job.id, {
-    status: "succeeded", descriptions, finishedAt: nowIso(),
-    notes: `Described ${Object.keys(descriptions).length} scenes with ${provider}.${missed ? ` ${missed} came back empty; describe them yourself or run again.` : ""}`,
-  });
+  return { descriptions, provider, targets: targets.length };
 }
 
 /* ----------------------------------------------------------------- story */
@@ -280,6 +304,10 @@ Return JSON only: {"cast":[{"name":"…","look":"…"}]}`;
 export async function suggestCast(projectId: string, body: { cutId?: unknown }): Promise<{ cast: { name: string; look: string }[]; provider: string }> {
   const cut = await loadCut(projectId, String(body.cutId ?? ""));
   requireScriptInputs(cut);
+  return castFor(cut);
+}
+
+async function castFor(cut: StoryCut): Promise<{ cast: { name: string; look: string }[]; provider: string }> {
   const r = await chat({
     system: CAST_SYSTEM, json: true, maxTokens: 2048,
     messages: [{ role: "user", content: `SCRIPT:\n${cut.script.trim().slice(0, 20000)}\n\nFOOTAGE SCENES:\n${sceneCatalogue(cut)}` }],
@@ -298,9 +326,13 @@ const MATCH_SYSTEM = `You are a film editor. You illustrate a narrated script wi
 3. Use each scene as a first choice at most once across all lines, and keep the story's visual flow (avoid jumping between very different places without reason).
 Return JSON only: {"lines":[{"text":"…","scenes":[<n>,<n>,<n>]}]}`;
 
-export async function matchScript(projectId: string, body: { cutId?: unknown }): Promise<{ lines: { id: ID; text: string; sceneId: ID | null; options: ID[] }[]; notes: string; provider: string }> {
+export async function matchScript(projectId: string, body: { cutId?: unknown }): Promise<{ lines: StoryCutLine[]; notes: string; provider: string }> {
   const cut = await loadCut(projectId, String(body.cutId ?? ""));
   requireScriptInputs(cut);
+  return matchFor(cut);
+}
+
+async function matchFor(cut: StoryCut): Promise<{ lines: StoryCutLine[]; notes: string; provider: string }> {
   const lengths = cut.segments.map(segmentLength).sort((a, b) => a - b);
   const median = lengths[Math.floor(lengths.length / 2)] ?? 5;
   const maxWords = Math.min(30, Math.max(10, wordBudget(median * 1.6, cut.voice.speed)));
@@ -327,6 +359,40 @@ export async function matchScript(projectId: string, body: { cutId?: unknown }):
     lines, provider: r.provider,
     notes: `${lines.length} lines, ${lines.length - unmatched} with a scene.${unmatched ? ` ${unmatched} need a scene: pick one yourself.` : ""}`,
   };
+}
+
+/* ------------------------------------------------- one-button script flow */
+
+/** Script mode in one go. Each step's result is saved on the job as it finishes, so a later failure keeps earlier work. */
+async function runAuto(projectId: string, cut: StoryCut, job: StoryJob, sensitivity: number, rescan: boolean, progress: (m: string) => void) {
+  const sourceIds = new Set(cut.sources.map(s => s.assetId));
+  const needDetect = rescan || !cut.segments.length
+    || cut.sources.some(src => !cut.segments.some(s => s.assetId === src.assetId))
+    || cut.segments.some(s => !sourceIds.has(s.assetId));
+  const work: StoryCut = { ...cut, segments: cut.segments.map(s => ({ ...s })), cast: cut.cast.map(m => ({ ...m })) };
+
+  if (needDetect) {
+    work.segments = await detectSegments(projectId, cut, sensitivity, m => progress(`Step 1 of 4 · ${m}`));
+    await patch(projectId, job.id, { segments: work.segments });
+  }
+
+  const d = await describeSegments(projectId, work.segments, false, m => progress(`Step 2 of 4 · Watching the film: ${m.replace(/^Looking at /, "")}`),
+    desc => patch(projectId, job.id, { descriptions: desc }));
+  for (const s of work.segments) if (d.descriptions[s.id]) s.description = d.descriptions[s.id];
+  if (!work.segments.some(s => s.description.trim())) bad("The AI couldn't describe any scene, so it can't match your script. Try again.", 502);
+
+  let castNote = "";
+  if (!work.cast.some(m => m.name.trim())) {
+    progress("Step 3 of 4 · Casting your characters…");
+    const c = await castFor(work);
+    work.cast = c.cast;
+    await patch(projectId, job.id, { cast: c.cast });
+    castNote = ` Cast: ${c.cast.map(m => `${m.name} = ${m.look || "not in the footage"}`).join("; ")}.`;
+  }
+
+  progress("Step 4 of 4 · Picking a clip for each line of your script…");
+  const m = await matchFor(work);
+  await patch(projectId, job.id, { status: "succeeded", lines: m.lines, finishedAt: nowIso(), notes: `${work.segments.length} scenes watched. ${m.notes}${castNote}` });
 }
 
 /* ---------------------------------------------------------------- render */

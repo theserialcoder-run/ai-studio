@@ -15,7 +15,7 @@ const SENSITIVITY = [
   { value: 0.3, label: "Normal" },
   { value: 0.45, label: "More scenes" },
 ];
-const KIND_LABEL: Record<StoryJobView["kind"], string> = { detect: "Scene detection", describe: "Scene descriptions", render: "Render" };
+const KIND_LABEL: Record<StoryJobView["kind"], string> = { detect: "Scene detection", describe: "Scene descriptions", render: "Render", auto: "Find clips for my script" };
 
 /** "83", "1:23" or "1:02:03" → seconds; "" → null. */
 function parseTime(text: string): number | null {
@@ -38,6 +38,7 @@ export function StoryCutStudio() {
   const [previewId, setPreviewId] = useState<ID | null>(null);
   const [addId, setAddId] = useState("");
   const [pickLineId, setPickLineId] = useState<ID | null>(null);
+  const [rescan, setRescan] = useState(false);
 
   const cut = project.storyCuts.find(c => c.id === selectedId) ?? project.storyCuts[0] ?? null;
   const audioProviders = ai.providers?.audio ?? [];
@@ -65,7 +66,7 @@ export function StoryCutStudio() {
     setSelectedId(null);
   }
 
-  async function start(kind: StoryJobView["kind"], extra: { overwrite?: boolean; sensitivity?: number } = {}) {
+  async function start(kind: StoryJobView["kind"], extra: { overwrite?: boolean; sensitivity?: number; rescan?: boolean } = {}) {
     if (!cut) return;
     setBusy(kind);
     try {
@@ -77,6 +78,13 @@ export function StoryCutStudio() {
     } finally {
       setBusy("");
     }
+  }
+
+  function findClips() {
+    if (!cut) return;
+    if (cut.lines.length && !confirm("Find clips again? This replaces the current lines and clip choices (your script text stays).")) return;
+    void start("auto", { sensitivity, rescan });
+    setRescan(false);
   }
 
   function detect() {
@@ -343,6 +351,7 @@ export function StoryCutStudio() {
   const outputs = cut.outputAssetIds.map(id => assetById(project, id)).filter(a => !!a).reverse();
   const addable = videoAssets.filter(a => !cut.sources.some(s => s.assetId === a.id));
   const style = styleById(cut.style);
+  const autoJob = cutJobs.find(j => j.kind === "auto");
 
   return (
     <div className="content story-cuts">
@@ -358,9 +367,119 @@ export function StoryCutStudio() {
         <button className="tiny-button danger-text" onClick={deleteCut}>Delete</button>
       </div>
 
-      {/* 1. Footage */}
       <div className="panel">
-        <h3 className="step-title"><span className="step-num">1</span> Footage</h3>
+        <span className="field-label">HOW DO YOU WANT TO MAKE THIS VIDEO?</span>
+        <div className="chip-select" role="radiogroup" aria-label="How to make the video">
+          <button type="button" className={`chip${scriptMode ? " on" : ""}`} aria-pressed={scriptMode} onClick={() => editCut(c => { c.mode = "script"; }, "Switched a story cut to script mode")}>I have a script: find clips for it</button>
+          <button type="button" className={`chip${!scriptMode ? " on" : ""}`} aria-pressed={!scriptMode} onClick={() => editCut(c => { c.mode = "story"; }, "Switched a story cut to AI story mode")}>Write a story for my footage</button>
+        </div>
+      </div>
+
+      {scriptMode ? <>
+        {/* Script mode: script → film → one button → clips */}
+        <div className="panel">
+          <h3 className="step-title"><span className="step-num">1</span> Your script</h3>
+          <textarea className="field script-box" aria-label="Your script" value={cut.script} placeholder="Paste the narration your voiceover will read…"
+            onChange={e => editCut(c => { c.script = e.target.value; }, "Edited a story cut script")} />
+          <small className="muted">{countWords(cut.script)} words · about {formatTime(countWords(cut.script) / (2.4 * cut.voice.speed))} of narration</small>
+          <details className="cast-details" open={cut.cast.length > 0}>
+            <summary>Cast (optional: the AI suggests it when you find clips)</summary>
+            <span className="field-label">CAST <small className="muted">character = how they look in the footage</small></span>
+            <div className="stack">
+              {cut.cast.map((m, i) => (
+                <div key={i} className="cast-row">
+                  <input className="field" aria-label="Character name" value={m.name} placeholder="Name in your script"
+                    onChange={e => editCut(c => { c.cast[i].name = e.target.value; }, "Edited the cast")} />
+                  <input className="field" aria-label="Look in the footage" value={m.look} placeholder="e.g. old man in a grey coat"
+                    onChange={e => editCut(c => { c.cast[i].look = e.target.value; }, "Edited the cast")} />
+                  <button className="tiny-button" onClick={() => editCut(c => { c.cast.splice(i, 1); }, "Edited the cast")}>Remove</button>
+                </div>
+              ))}
+            </div>
+            <div className="button-row">
+              {described > 0 && <button className="button secondary" disabled={!!busy || !cut.script.trim()} onClick={() => void suggestCast()}>{busy === "cast" ? "Casting…" : "Suggest cast again"}</button>}
+              <button className="tiny-button" onClick={() => editCut(c => { c.cast.push({ name: "", look: "" }); }, "Edited the cast")}>+ Add character</button>
+            </div>
+          </details>
+        </div>
+
+        <div className="panel">
+          <h3 className="step-title"><span className="step-num">2</span> Your film</h3>
+        <p className="muted small">
+          Use footage you&apos;re allowed to monetize: free stock clips (Pexels, Pixabay) or public-domain films (check each film&apos;s status).
+          Clips from copyrighted movies are usually claimed by YouTube&apos;s Content ID.
+        </p>
+        {cut.sources.length === 0 && <p className="small">Add one long film or several stock clips.</p>}
+        <div className="stack">
+          {cut.sources.map((src, i) => (
+            <div key={src.assetId} className="source-row">
+              <span className="source-name" title={assetById(project, src.assetId)?.name}>{i + 1}. {assetById(project, src.assetId)?.name ?? "Missing file"}</span>
+              <label>FROM<input className="field" placeholder="start" defaultValue={src.start !== null ? formatTime(src.start) : ""}
+                onBlur={e => editCut(c => { const x = c.sources.find(y => y.assetId === src.assetId); if (x) x.start = parseTime(e.target.value); }, "Edited story cut footage")} /></label>
+              <label>TO<input className="field" placeholder="end" defaultValue={src.end !== null ? formatTime(src.end) : ""}
+                onBlur={e => editCut(c => { const x = c.sources.find(y => y.assetId === src.assetId); if (x) x.end = parseTime(e.target.value); }, "Edited story cut footage")} /></label>
+              <button className="tiny-button" onClick={() => editCut(c => { c.sources = c.sources.filter(x => x.assetId !== src.assetId); }, "Removed footage from a story cut")}>Remove</button>
+            </div>
+          ))}
+        </div>
+        <div className="button-row">
+          <select className="field" aria-label="Add a video" value={addId} onChange={e => setAddId(e.target.value)}>
+            <option value="">{addable.length ? "Choose a video from the library…" : "No other videos in the library"}</option>
+            {addable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          <button className="button secondary" disabled={!addId} onClick={() => { editCut(c => { c.sources.push({ assetId: addId, start: null, end: null }); }, "Added footage to a story cut"); setAddId(""); }}>Add</button>
+          <UploadButton label="Upload videos" accept="video/*" onFiles={files => ws.uploadFiles(files, (d, assets) => {
+            const c = d.storyCuts.find(x => x.id === cut.id);
+            if (c) for (const a of assets) if (a.kind === "video") c.sources.push({ assetId: a.id, start: null, end: null });
+          }, "Uploaded footage for a story cut")} />
+        </div>
+          {!ai.providers?.activeLlm && ai.providers && <p className="warn-text">Finding clips needs the AI: add GEMINI_API_KEY to .env.local (free at aistudio.google.com), then close the Wonderboy window and start it again.</p>}
+          <div className="find-clips">
+            <button className="button primary big" disabled={!cut.sources.length || !cut.script.trim() || !!busy || running.has("auto") || running.has("detect") || running.has("describe") || tools?.ok === false} onClick={findClips}>
+              {running.has("auto") ? "Finding clips…" : cut.lines.length ? "Find clips again" : "Find clips for my script"}
+            </button>
+            {autoJob?.status === "running" && <p className="small find-progress">{autoJob.progress ?? "Starting…"}</p>}
+            {!running.has("auto") && <small className="muted">The AI scans your film, watches every scene, casts your characters and picks a clip for each line. A 15-minute stretch of film takes about 5–15 minutes on this laptop.</small>}
+          </div>
+          <details className="advanced">
+            <summary>Advanced</summary>
+            <div className="button-row">
+              <select className="field" aria-label="Scene sensitivity" value={sensitivity} onChange={e => setSensitivity(Number(e.target.value))}>
+                {SENSITIVITY.map(x => <option key={x.value} value={x.value}>{x.label}</option>)}
+              </select>
+              {cut.segments.length > 0 && <label className="check inline"><input type="checkbox" checked={rescan} onChange={e => setRescan(e.target.checked)} /><span>Scan the film again (after changing FROM/TO)</span></label>}
+            </div>
+            {cut.segments.length > 0 && <>
+              <p className="muted small">{cut.segments.length} scenes found · {described} watched. If the AI stopped early, these buttons finish single steps:</p>
+          <div className="button-row">
+            <button className="button primary" disabled={!!busy || running.has("describe")} onClick={() => void start("describe", { overwrite: overwriteDescriptions })}>
+              {running.has("describe") ? "Describing…" : "Describe scenes with AI"}
+            </button>
+            <label className="check inline"><input type="checkbox" checked={overwriteDescriptions} onChange={e => setOverwriteDescriptions(e.target.checked)} /><span>Redo existing descriptions</span></label>
+          </div>
+              <div className="button-row">
+                <button className="button secondary" disabled={!!busy || !cut.script.trim() || !described} onClick={() => void matchScript()}>{busy === "match" ? "Matching…" : "Only re-match clips (keep scenes and cast)"}</button>
+              </div>
+            </>}
+          </details>
+        </div>
+
+        {(cut.lines.length > 0 || cut.segments.length > 0) && (
+          <div className="panel">
+            <h3 className="step-title"><span className="step-num">3</span> Clips for your script <small className="muted">{cut.lines.length} lines · {linesWithScene.length} with a clip · about {formatTime(estVideo)} of video</small></h3>
+            {cut.lines.length > 0 && <p className="muted small">Click a picture to play the clip. Click a small thumbnail to swap in another suggestion, or “Choose scene…” to browse every scene.</p>}
+            {cut.lines.length > 0 && <div className="scene-cut-list">{cut.lines.map((l, i) => renderLine(l, i, cut))}</div>}
+            <details className="scene-library">
+              <summary>Scene library ({cut.segments.length} scenes): check and fix descriptions</summary>
+              <div className="scene-cut-list">{cut.segments.map((s, i) => renderSegment(s, i, cut, true))}</div>
+            </details>
+            {renderScenePicker(cut)}
+          </div>
+        )}
+      </> : <>
+        {/* Story mode: footage → scenes → AI story */}
+        <div className="panel">
+          <h3 className="step-title"><span className="step-num">1</span> Footage</h3>
         <p className="muted small">
           Use footage you&apos;re allowed to monetize: free stock clips (Pexels, Pixabay) or public-domain films (check each film&apos;s status).
           Clips from copyrighted movies are usually claimed by YouTube&apos;s Content ID.
@@ -398,26 +517,19 @@ export function StoryCutStudio() {
           </button>
         </div>
         <p className="muted small">Long films take a few minutes on this laptop. Set FROM/TO (e.g. 12:30) to use only part of a film.</p>
-      </div>
+        </div>
 
-      {/* 2 + 3. Describe and write */}
-      {cut.segments.length > 0 && (
-        <div className="panel">
-          <h3 className="step-title"><span className="step-num">2</span> Scenes <small className="muted">{cut.segments.length} scenes · {described} described · {formatTime(cut.segments.reduce((n, s) => n + segmentLength(s), 0))} of footage</small></h3>
-          <p className="muted small">The AI sees 1–2 still frames per scene, so it can misread an action or a feeling. Fix descriptions where needed: the story is written from them.</p>
+        {cut.segments.length > 0 && (
+          <div className="panel">
+            <h3 className="step-title"><span className="step-num">2</span> Scenes <small className="muted">{cut.segments.length} scenes · {described} described · {formatTime(cut.segments.reduce((n, x) => n + segmentLength(x), 0))} of footage</small></h3>
+            <p className="muted small">The AI sees 1–2 still frames per scene, so it can misread an action or a feeling. Fix descriptions where needed: the story is written from them.</p>
           <div className="button-row">
             <button className="button primary" disabled={!!busy || running.has("describe")} onClick={() => void start("describe", { overwrite: overwriteDescriptions })}>
               {running.has("describe") ? "Describing…" : "Describe scenes with AI"}
             </button>
             <label className="check inline"><input type="checkbox" checked={overwriteDescriptions} onChange={e => setOverwriteDescriptions(e.target.checked)} /><span>Redo existing descriptions</span></label>
           </div>
-
-          <h3 className="step-title"><span className="step-num">3</span> Story</h3>
-          <div className="chip-select" role="radiogroup" aria-label="How to make the story">
-            <button type="button" className={`chip${!scriptMode ? " on" : ""}`} aria-pressed={!scriptMode} onClick={() => editCut(c => { c.mode = "story"; }, "Switched a story cut to AI story mode")}>Write a story for these scenes</button>
-            <button type="button" className={`chip${scriptMode ? " on" : ""}`} aria-pressed={scriptMode} onClick={() => editCut(c => { c.mode = "script"; }, "Switched a story cut to script mode")}>I have a script</button>
-          </div>
-          {!scriptMode ? <>
+            <h3 className="step-title"><span className="step-num">3</span> Story</h3>
           <div className="form-grid">
             <label>STYLE
               <select className="field" value={cut.style} onChange={e => editCut(c => { c.style = e.target.value; }, "Changed story cut style")}>
@@ -436,47 +548,12 @@ export function StoryCutStudio() {
           </div>
 
           <div className="scene-cut-list">{cut.segments.map((s, i) => renderSegment(s, i, cut))}</div>
-          </> : <>
-            <p className="muted small">
-              Paste your narration script. The AI casts your characters with people from this footage, splits the script into lines and picks a matching scene for each.
-              For consistent characters, use scenes from one film.
-            </p>
-            <label>YOUR SCRIPT
-              <textarea className="field script-box" value={cut.script} placeholder="Paste the narration your voiceover will read…"
-                onChange={e => editCut(c => { c.script = e.target.value; }, "Edited a story cut script")} />
-            </label>
-            <span className="field-label">CAST <small className="muted">character = how they look in the footage</small></span>
-            <div className="stack">
-              {cut.cast.map((m, i) => (
-                <div key={i} className="cast-row">
-                  <input className="field" aria-label="Character name" value={m.name} placeholder="Name in your script"
-                    onChange={e => editCut(c => { c.cast[i].name = e.target.value; }, "Edited the cast")} />
-                  <input className="field" aria-label="Look in the footage" value={m.look} placeholder="e.g. old man in a grey coat"
-                    onChange={e => editCut(c => { c.cast[i].look = e.target.value; }, "Edited the cast")} />
-                  <button className="tiny-button" onClick={() => editCut(c => { c.cast.splice(i, 1); }, "Edited the cast")}>Remove</button>
-                </div>
-              ))}
-            </div>
-            <div className="button-row">
-              <button className="button secondary" disabled={!!busy || !cut.script.trim() || !described} onClick={() => void suggestCast()}>{busy === "cast" ? "Casting…" : "Suggest cast with AI"}</button>
-              <button className="tiny-button" onClick={() => editCut(c => { c.cast.push({ name: "", look: "" }); }, "Edited the cast")}>+ Add character</button>
-            </div>
-            <div className="button-row">
-              <button className="button primary" disabled={!!busy || !cut.script.trim() || !described} onClick={() => void matchScript()}>{busy === "match" ? "Matching scenes…" : cut.lines.length ? "Match scenes again" : "Match scenes to my script"}</button>
-              <small className="muted">{cut.lines.length} lines · {linesWithScene.length} with a scene · about {formatTime(estVideo)} of video</small>
-            </div>
-            {cut.lines.length > 0 && <div className="scene-cut-list">{cut.lines.map((l, i) => renderLine(l, i, cut))}</div>}
-            <details className="scene-library">
-              <summary>Scene library ({cut.segments.length} scenes): check and fix descriptions</summary>
-              <div className="scene-cut-list">{cut.segments.map((s, i) => renderSegment(s, i, cut, true))}</div>
-            </details>
-            {renderScenePicker(cut)}
-          </>}
-        </div>
-      )}
+          </div>
+        )}
+      </>}
 
       {/* 4. Voice and render */}
-      {cut.segments.length > 0 && (
+      {(scriptMode ? cut.lines.length > 0 : cut.segments.length > 0) && (
         <div className="panel">
           <h3 className="step-title"><span className="step-num">4</span> Voice &amp; video</h3>
           <div className="form-grid three">

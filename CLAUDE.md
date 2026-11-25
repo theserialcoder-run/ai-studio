@@ -75,7 +75,7 @@ src/
       projects/[id]/conversations/   GET · POST; [cid] PATCH/DELETE; [cid]/messages POST (chat turn)
       projects/[id]/assist/          POST script-assistant task → proposals
       comfyui/route.ts               GET status (?check=1 contacts ComfyUI) · PUT {url, authHeader?, clearAuth?}
-      projects/[id]/storycuts/       jobs GET/POST (detect|describe|render) · story POST · script POST {action: cast|match} · frames/[name] GET
+      projects/[id]/storycuts/       jobs GET/POST (detect|describe|render|auto) · story POST · script POST {action: cast|match} · frames/[name] GET
       providers/route.ts             GET provider registry (status + capabilities, no secrets)
   components/
     studio.tsx                       StudioContext/useStudio, TABS, shared UI (fields, Modal, AssetPreview, ReferenceImages…)
@@ -134,7 +134,7 @@ data/models/                             Kokoro model cache (downloaded on first
 
 ## Data model highlights (`src/lib/types.ts`)
 
-- Story cuts: `project.storyCuts[]` with `mode` (`story`: AI writes narration per scene; `script`: user script → `cast` + `lines[]` each pointing at a chosen scene with AI `options`), `sources` (video assets + optional range), `segments` (array order = edit order; start/end in the source, keyframes, description, narration, skip), voice settings, `filmVolume`, `outputAssetIds`. Job results (scenes, descriptions, renders) are imported by `useStoryCuts` once, tracked in `importedGenerationIds`.
+- Story cuts: `project.storyCuts[]` with `mode` (`story`: AI writes narration per scene; `script`, the default: user script → `cast` + `lines[]` each pointing at a chosen scene with AI `options`; the `auto` job runs detect → describe → cast → match in one go and stores partial results on the job), `sources` (video assets + optional range), `segments` (array order = edit order; start/end in the source, keyframes, description, narration, skip), voice settings, `filmVolume`, `outputAssetIds`. Job results (scenes, descriptions, renders) are imported by `useStoryCuts` once, tracked in `importedGenerationIds`.
 - Project: `scripts`, `scenes` (array order = scene order per script), `shots` (array order = shot order per scene), `characters` (+ `variations`), `locations` (+ `angles`), `assets`, `activity`, `importedGenerationIds`.
 - Shot: camera fields, `characters: {characterId, variationId}[]`, `locationId`, `locationAngleId`, `assetIds` (references), and `generatedAssetIds` (AI takes).
 - Shot and scene numbers are derived (`shotNumber`, `sceneNumber`). Never store them.

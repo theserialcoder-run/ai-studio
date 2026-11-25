@@ -71,7 +71,7 @@ export function makeAngle(partial: Partial<LocationAngle> = {}): LocationAngle {
 export function makeStoryCut(partial: Partial<StoryCut> = {}): StoryCut {
   const t = nowIso();
   return {
-    id: newId(), title: "Untitled story", mode: "story", script: "", cast: [], lines: [], sources: [], style: "life-lesson", instructions: "",
+    id: newId(), title: "Untitled story", mode: "script", script: "", cast: [], lines: [], sources: [], style: "life-lesson", instructions: "",
     voice: { providerId: "kokoro", voice: "af_heart", speed: 1 }, filmVolume: 0.15, segments: [], outputAssetIds: [],
     createdAt: t, updatedAt: t, ...partial,
   };

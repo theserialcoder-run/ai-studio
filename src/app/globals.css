@@ -956,4 +956,9 @@ button.stat-card:hover { border-color: #4a4535; }
 @media (max-width: 620px) {
   .cast-row { grid-template-columns: 1fr; }
 }
+.cast-details, .advanced { margin-top: 12px; }
+.cast-details summary, .advanced summary { cursor: pointer; color: var(--gold); font-size: var(--fs-sm); margin-bottom: 8px; }
+.find-clips { display: grid; gap: 8px; justify-items: start; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.button.big { font-size: var(--fs-md); padding: 12px 22px; }
+.find-progress { color: var(--gold); margin: 0; }
 

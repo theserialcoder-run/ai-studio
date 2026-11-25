@@ -34,22 +34,27 @@ export function useStoryCuts(ws: Workspace) {
   const { mutate } = ws;
   useEffect(() => {
     if (!project) return;
-    const ready = jobs.filter(j => !project.importedGenerationIds.includes(j.id) && !importing.current.has(j.id) && (
-      (j.status === "succeeded" && (j.segments || j.descriptions || j.output)) ||
-      (j.status === "failed" && j.descriptions && Object.keys(j.descriptions).length > 0)));
+    const hasResult = (j: StoryJobView) => !!(j.segments || j.output || j.lines || j.cast?.length || (j.descriptions && Object.keys(j.descriptions).length));
+    // Failed jobs can carry partial results (e.g. scenes found before the AI hit a limit): keep those too.
+    const ready = jobs.filter(j => j.status !== "running" && hasResult(j) && !project.importedGenerationIds.includes(j.id) && !importing.current.has(j.id));
     for (const j of ready) {
       importing.current.add(j.id);
-      const label = j.kind === "detect" ? `Found ${j.segments?.length ?? 0} scenes` : j.kind === "describe" ? `Described ${Object.keys(j.descriptions ?? {}).length} scenes` : "Rendered a video";
+      const label = j.kind === "detect" ? `Found ${j.segments?.length ?? 0} scenes`
+        : j.kind === "describe" ? `Described ${Object.keys(j.descriptions ?? {}).length} scenes`
+        : j.kind === "auto" ? (j.lines ? `Found clips for ${j.lines.length} script lines` : "Saved partial results")
+        : "Rendered a video";
       mutate(d => {
         const cut = d.storyCuts.find(c => c.id === j.cutId);
         if (cut) {
-          if (j.kind === "detect" && j.segments) {
+          if (j.segments) {
             cut.segments = j.segments;
             // Script lines keep their text; their scene picks pointed at the old scenes.
             for (const l of cut.lines) { l.sceneId = null; l.options = []; }
           }
-          if (j.kind === "describe" && j.descriptions) for (const s of cut.segments) if (j.descriptions[s.id]) s.description = j.descriptions[s.id];
-          if (j.kind === "render" && j.output) {
+          if (j.descriptions) for (const s of cut.segments) if (j.descriptions[s.id]) s.description = j.descriptions[s.id];
+          if (j.cast?.length) cut.cast = j.cast;
+          if (j.lines) { cut.lines = j.lines; cut.mode = "script"; }
+          if (j.output) {
             if (!d.assets.some(a => a.id === j.output!.id)) d.assets.push(j.output);
             if (!cut.outputAssetIds.includes(j.output.id)) cut.outputAssetIds.push(j.output.id);
           }
