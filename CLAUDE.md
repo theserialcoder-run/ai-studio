@@ -4,187 +4,184 @@ Guidance for Claude Code (and humans) working in this repository. It describes t
 
 ## What this is
 
-Wonderboy AI Studio is a private, single-user **AI filmmaking workspace** that runs in the browser. You develop a film from idea to shots in one place:
+Wonderboy AI Studio is a private, single-user **AI filmmaking studio**. It runs as a local Next.js app and is used in the browser. The workflow is:
 
-- talk an idea through with an AI companion (Gemini, optional),
-- write the screenplay,
-- break it into a shot list,
-- keep a continuity library of character and location references,
-- prepare continuity-aware prompts for image/video generation.
+**Project → Script → Scenes → Shots → characters & locations (with reference images) → prompt → generate image → generate video → saved to the project and its shot.**
 
-It is a **functional prototype ("starter")**. Image and video generation are deliberately **not** wired to any provider yet. See [Limitations](#limitations--unfinished-work).
+Each project holds scripts, scenes, shots, a character library (identity + wardrobe variations + reference images), a location library (fixed details + camera angles + reference images), an asset library of files, AI conversations and a generation history.
 
-Other docs:
-- `docs/PROGRESS.md` is the source of truth for feature status. Update it after meaningful changes.
-- `docs/ARCHITECTURE.md` covers the continuity design and provider-adapter principles. Parts of it are target design, not current code.
-- `docs/PROVIDERS.md` covers how to choose and connect Gemini and image/video providers.
+The AI engine (all server-side, provider-independent):
+- **AI Companion:** multi-turn chat, persisted per project, aware of the live project. It has mic dictation and spoken replies (browser Web Speech API), and returns **proposals** (scripts, scenes, shots, characters, locations, logline) that the user reviews before applying.
+- **Script Assistant:** ideas, loglines, outlines, full scripts, script/scene improvement, dialogue rewrites, scene breakdowns, shot lists, character and location suggestions. All of these come back as reviewable proposals.
+- **Image generation:** Cloudflare FLUX.2 (free daily allocation, up to 4 reference images), FLUX.1 schnell (text-only), Gemini Nano Banana (paid, up to 14 references). Supports image-to-image.
+- **Video generation:** Gemini Omni Flash (paid: text-, image- and reference-to-video) and fal.ai (paid: Kling image-to-video, Wan text-to-video).
+- **Voice (text-to-speech):** Kokoro-82M runs **locally on the CPU** (free, unlimited, English, Apache-2.0; tested and working). Gemini 3.8 Flash TTS covers Hindi and 100+ languages on the free tier.
+
+See `docs/PROVIDERS.md` for setup, costs and per-integration status.
+
+**Product direction (decided Nov 2026):** the output is for a **monetized YouTube channel** on a **$50/month budget**. Prefer free tiers. For real generation, the plan is to **rent a GPU (RunPod) and run open, commercially licensed models via ComfyUI** (Qwen-Image, Qwen-Image-Edit, Wan 2.2), paying only for GPU time. This is **planned, not built**; see the roadmap in `docs/PROGRESS.md`. Rules that follow from it:
+- Only use models whose licences allow commercial use for production features. Flag anything else.
+- Never start a paid GPU or paid job without an explicit user action, with the price shown. GPU features must include idle auto-stop and respect the budget cap.
+- Paid per-call APIs (Gemini image/Omni, fal.ai) stay as optional fallbacks, not the default path.
+
+Other docs: `docs/PROGRESS.md` (feature status; update it after meaningful changes) and `docs/ARCHITECTURE.md` (continuity design).
 
 ## Tech stack
 
 | Area | Choice |
 |---|---|
 | Framework | Next.js 15 (App Router), React 19 |
-| Language | TypeScript 5, `strict: true`, path alias `@/*` → `src/*` |
-| Styling | One global stylesheet, `src/app/globals.css`: plain CSS with custom-property tokens. No Tailwind, no CSS modules, no component library |
-| Fonts | Google Fonts via CSS `@import`: DM Sans (UI), DM Mono (labels/meta), Playfair Display (headings) |
-| AI | Google Gemini `generateContent` REST API, called with `fetch` from a server route (no SDK) |
-| Persistence | Browser `localStorage` only |
-| Lint | ESLint 9 flat config (`eslint.config.mjs`) extending `next/core-web-vitals` + `next/typescript` |
-| Runtime deps | Only `next`, `react` and `react-dom`. Keep it that way unless there is a strong reason |
-
-There is **no** database, auth, state library, test framework or UI kit.
+| Language | TypeScript 5 strict, alias `@/*` → `src/*` |
+| Styling | One global stylesheet `src/app/globals.css` with custom-property tokens. No Tailwind or UI kit |
+| Persistence | JSON documents + files on the local file system via Node `fs` (no database) |
+| AI | Plain `fetch` / `node:https` REST calls to Gemini (generateContent + Interactions API), Cloudflare Workers AI, fal.ai queue, and any OpenAI-compatible endpoint. **No SDKs** |
+| Voice | Browser `SpeechRecognition` + `speechSynthesis` |
+| Lint | ESLint 9 flat config (`eslint.config.mjs`) |
+| Runtime deps | `next`, `react`, `react-dom`, plus `kokoro-js` and `@huggingface/transformers` for local TTS (approved: free, offline speech). Add nothing else without a strong reason |
+| Native/external | `next.config.ts` marks `kokoro-js`, `@huggingface/transformers`, `onnxruntime-node` and `phonemizer` as `serverExternalPackages`, because they load native binaries and package-relative files. `.npmrc` skips onnxruntime's CUDA download |
 
 ## Commands
 
-Requires Node.js ≥ 20.9 and npm.
-
 ```bash
 npm install
-cp .env.example .env.local   # optional; app works without keys
+cp .env.example .env.local   # add keys you need (see docs/PROVIDERS.md); app runs without them
 npm run dev                  # http://localhost:3000
-npm run lint                 # ESLint
-npx tsc --noEmit             # type check (also runs during build)
-npm run build                # production build (also lints + type-checks)
-npm start                    # serve the production build
+npm run lint
+npx tsc --noEmit
+npm run build
+npm start
 ```
 
-- **Tests:** there is no test suite and no `test` script. Verify changes with lint, `tsc`, `build`, and by running the app.
-- `next dev` and `next start` both use `.next/`. Don't run them at the same time, or the production server will serve chunks the dev server has overwritten.
-- `.env.local` changes need a dev-server restart.
+- **Tests:** there's no test suite. Verify with `npx tsc --noEmit`, `npm run lint` and `npm run build`. For API/storage changes, run a short `curl` smoke test against `npm start` with `WONDERBOY_DATA_DIR` set to a temp folder.
+  - Start the server with `node_modules/.bin/next start`, not `npx` (killing `npx` leaves the server running), and confirm port 3000/3123 is free afterwards.
+  - **Never** call paid providers in tests. Fake credentials are fine for exercising error paths.
+- **Dev machine has 8 GB RAM.** No headless browsers, screenshot tools or long-lived background servers unless asked.
+- `next dev` and `next start` both write `.next/`. Never run both at once.
+- `.env.local` changes require a server restart.
 
 ## Folder structure
 
 ```
 src/
   app/
-    layout.tsx                 Root layout: <html>/<body>, metadata, imports globals.css
-    page.tsx                   THE ENTIRE UI: a single "use client" component (Home) + ReferenceGroup
-    globals.css                All styles: tokens, app shell, components, per-view styles, breakpoints
+    page.tsx                         Shell: sidebar (project switcher, nav), topbar (save state), banner, view routing
+    globals.css                      All styles
     api/
-      chat/route.ts            POST: Gemini companion (or a friendly "not connected" reply)
-      generate/image/route.ts  POST: image provider placeholder (never calls a provider)
-      generate/video/route.ts  POST: video provider placeholder (never calls a provider)
-  types/
-    speech.d.ts                Minimal Web Speech API typings (SpeechRecognition)
-docs/                          PROGRESS.md, ARCHITECTURE.md, PROVIDERS.md
-.env.example                   Env var template (copy to .env.local; never commit .env.local)
-eslint.config.mjs              ESLint flat config
+      projects/route.ts              GET list · POST create
+      projects/[id]/route.ts         GET · PUT (revision-checked) · DELETE
+      projects/[id]/files/…          POST upload · GET [assetId] stream (Range)
+      projects/[id]/generations/     GET history (+live progress) · POST start job
+      projects/[id]/conversations/   GET · POST; [cid] PATCH/DELETE; [cid]/messages POST (chat turn)
+      projects/[id]/assist/          POST script-assistant task → proposals
+      providers/route.ts             GET provider registry (status + capabilities, no secrets)
+  components/
+    studio.tsx                       StudioContext/useStudio, TABS, shared UI (fields, Modal, AssetPreview, ReferenceImages…)
+    CompanionView.tsx                AI chat: conversations, voice in/out, proposals
+    ProposalCard.tsx                 Review/apply UI for AI proposals (confirms before overwriting)
+    ScriptStudio.tsx, ScriptAssistant.tsx
+    ShotPlanner.tsx, ContinuityPicker.tsx, CharacterLibrary.tsx, LocationLibrary.tsx, AssetLibrary.tsx
+    GenerationStudio.tsx             Image/Video Studio: provider, shot/refs, source/start frame, settings, jobs
+    VoiceStudio.tsx                  Text-to-speech: engine/voice, speed or style, text from scenes, shot link, history
+    DashboardView.tsx, ProjectsView.tsx, SettingsView.tsx (incl. AI providers panel)
+  lib/
+    types.ts                         Domain types
+    projectModel.ts                  PURE: factories, normalizeProject, selectors, cascading mutations
+    continuity.ts                    PURE: ContinuityBundle + prompt text for a shot / manual selection
+    proposals.ts                     PURE: Proposal types, normalizeProposal(s), applyProposal, chat-block parsing
+    ai/types.ts                      Shared AI types (caps, provider info, GenerationRequest/Record, Conversation)
+    client/api.ts, client/useWorkspace.ts, client/legacy.ts
+    client/ai.ts                     AI route wrappers + prepareImage (canvas downscale for references)
+    client/useAi.ts                  Providers + generation polling; imports finished outputs into the project once
+    server/storage.ts                fs persistence, side files, generated-file saving (server-only)
+    server/http.ts                   StorageError/ProviderError → JSON response
+    server/ai/http.ts                ProviderError, HTTP error explanations, postJsonLong (node:https, long timeout)
+    server/ai/llm.ts                 Gemini generateContent + OpenAI-compatible; chat()
+    server/ai/image.ts               Cloudflare FLUX.2 klein/dev, FLUX.1 schnell, Gemini image (Interactions API)
+    server/ai/video.ts               Gemini Omni Flash (Interactions API), fal.ai queue (Kling/Wan)
+    server/ai/audio.ts               TTS: Kokoro (local, lazy-loaded, 1 job at a time, idle unload) + Gemini TTS; WAV utils
+    server/generations.ts            Job validation (caps, paid approval), background runner, records
+    server/assistant.ts              Project context builder, companion prompt, conversations, script-assistant tasks
+data/                                Runtime data (git-ignored)
 ```
 
-There is no `components/`, `lib/` or `hooks/` directory yet. Everything UI-related lives in `src/app/page.tsx`.
-
-## Application architecture
-
-### UI: one client component, tab-based
-
-`src/app/page.tsx` renders the whole app. Navigation is **in-memory tab state** (`const [tab, setTab] = useState("Overview")`), not routes. There is one URL (`/`), and tabs are not deep-linkable and don't survive reload.
-
-Tabs (the `nav` array): **Overview, AI Companion, Script, Shots, References, Image Studio, Video Studio, Settings**. Each is a conditional block `{tab==="…" && <div className="content">…</div>}`. Image Studio and Video Studio share one block that branches on `tab`.
-
-The JSX is written densely, often one long line per tab. Keep edits surgical and consistent with the surrounding style unless you are deliberately refactoring.
-
-### App shell / layout
+## Storage
 
 ```
-<main.shell>
-  <aside.sidebar>    brand, project pill, nav buttons, status footer
-  <section.main-area>
-    <header.topbar>  eyebrow + <h1>{tab}</h1>, "Saved locally", Export button
-    <div.content>    active tab
-    <footer.footer>  static label + `notice` status message
+data/projects/<id>/project.json          project document (client-owned, revision-checked PUT)
+data/projects/<id>/project.json.bak      previous version
+data/projects/<id>/files/<assetId>.<ext> uploaded and generated files
+data/projects/<id>/generations.json      generation job records (server-owned)
+data/projects/<id>/conversations.json    AI conversations (server-owned)
+data/models/                             Kokoro model cache (downloaded on first TTS use)
 ```
 
-Scrolling model (in `globals.css`):
-- **>620px (desktop/tablet):** `.shell` is exactly viewport height (`100dvh`) with `overflow:hidden`. `.sidebar` is a pinned full-height column that scrolls on its own if it overflows. **Only `.main-area` scrolls**, and `.topbar` is `position:sticky; top:0` inside it. The footer sits at the bottom via `margin-top:auto`.
-- **≤620px (mobile):** normal document scrolling. The sidebar collapses into a **sticky horizontal nav strip** (brand mark + scrollable tabs). The topbar scrolls away, so there aren't two stacked sticky bars.
-- Breakpoints: `1100px` (narrower sidebar/gutters), `900px` (multi-column grids stack to one column), `620px` (mobile).
-- Layout tokens: `--sidebar-w`, `--topbar-h`, `--gutter` (overridden per breakpoint).
+- `project.json` is written by the client through `PUT`, with optimistic concurrency (a `409` triggers a reload banner). Side files are written only by the server under a per-file lock, so they never conflict with client saves.
+- `normalizeProject()` validates every load and save and drops dangling references. Keep it in sync with `types.ts`.
+- Removing an asset from the document deletes its file on the next save.
+- **Generated outputs:** the job runner writes files and stores their `Asset` records in the generation record. The client (`useAi`) then adds them to `project.assets`, links them to `shot.generatedAssetIds`, and records the job ID in `project.importedGenerationIds`, so each job is imported once even if its asset is later deleted.
 
-### State and data flow
+## Data model highlights (`src/lib/types.ts`)
 
-All state is React `useState` inside `Home`. There's no context, reducer or external store.
+- Project: `scripts`, `scenes` (array order = scene order per script), `shots` (array order = shot order per scene), `characters` (+ `variations`), `locations` (+ `angles`), `assets`, `activity`, `importedGenerationIds`.
+- Shot: camera fields, `characters: {characterId, variationId}[]`, `locationId`, `locationAngleId`, `assetIds` (references), and `generatedAssetIds` (AI takes).
+- Shot and scene numbers are derived (`shotNumber`, `sceneNumber`). Never store them.
 
-```ts
-type RefAsset = { id; name; kind: "character" | "location"; description; image?: string /* data URL */; createdAt };
-type Shot     = { id; title; scene; description; characterIds: string[]; locationId: string; status: string };
-type Project  = { name; logline; style; script; assets: RefAsset[]; shots: Shot[] };
-```
+## AI architecture
 
-- `project` is the only persisted state. It is saved to `localStorage["wonderboy-studio-project-v1"]` on every change and loaded once on mount (the default is the `starter` project "The Disturbance"). Mutations go through `update(key, value)`.
-- Uploaded reference images are read with `FileReader` and stored **inline as base64 data URLs** in the project JSON.
-- Everything else is ephemeral: chat history, form inputs, `prompt` and `generatedPrompt`, `notice` (footer status text), `busy` (shared by chat and generation).
-- **Export:** `exportProject()` downloads the project as `<slug>-project.json`. There is **no import**.
-- **Reset** (Settings): removes the storage key and restores `starter`.
-
-### Feature map
-
-| Tab | What it does | Status |
-|---|---|---|
-| Overview | Hero, project name/logline, counts (characters/locations/shots/script), workflow shortcuts | Working |
-| AI Companion | Chat UI → `POST /api/chat` with `{message, project:{name,logline,style,script}}`. Prompt chips prefill input. 🎙 uses Web Speech recognition (en-US) to fill the input; "Read aloud" uses `speechSynthesis` | Working. Gemini optional. Single-turn only (no history sent), not persisted, no auto-scroll |
-| Script | Edit project title, logline, screenplay (monospace textarea), word count, autosave | Working |
-| Shots | Add (title + description) / remove shots; "Create image" copies the shot into the Image Studio prompt | Working. Scene label is `Scene NN` from list length. `characterIds`, `locationId` and `status` are never editable in the UI |
-| References | Add character/location with name, canonical description, optional image upload; grid per kind; remove | Working (localStorage-backed) |
-| Image / Video Studio | Prompt editor; "Prepare continuity prompt" builds `style + CONTINUITY REFERENCES + SHOT PROMPT` locally; "Generate" posts to the placeholder route and shows its message in the footer; copy prepared prompt | Prompt prep works. **Generation is a placeholder** |
-| Settings | Edit project name + style bible; provider list; export backup; reset local project | Working. Provider pills are **hard-coded text**, not real env detection |
+- **Providers** are server-side adapters with honest capability descriptors (`ImageCaps`/`VideoCaps` in `src/lib/ai/types.ts`): max reference images (0 = text-only), image-to-image / image-to-video, aspect ratios, sizes, durations, resolutions, `referenceMaxSide`, and cost per second. `GET /api/providers` exposes `configured`, `billing` (`free-allocation`/`paid`), `costNote`, `requirements`, `setup` and `conditioning`, all derived from env. The UI is driven entirely by this, so adding a provider requires no UI changes.
+- **References:** the browser picks reference images from the shot's continuity bundle (`buildContinuityBundle`, ordered primary identity → wardrobe → location angle → location → shot refs). It downscales them with a canvas (`prepareImage`, ≤511px for Cloudflare FLUX.2) and sends them as base64 JPEG. Adapters label each image in the prompt (FLUX.2: "image N = …", Gemini: a text part before each image).
+- **Jobs:** `POST /generations` validates against caps, requires `approvedPaid: true` for paid providers, stores a `running` record and runs in the background (max 3 concurrent per server). The client polls every 3 s while jobs run. Jobs interrupted by a server restart are marked failed, with advice to check the provider dashboard. Paid jobs are never retried automatically.
+- **Audio** jobs use the same pipeline (`type: "audio"`, `audioSettings: {voice, speed?, style?}`) and produce WAV assets.
+  - Kokoro gotcha: `kokoro-js` 1.2.x `stream(string)` never finishes, because it doesn't close its splitter. Always pass a closed `TextSplitterStream`.
+  - fp32 is the default dtype because it was ~2× faster than q8 on the dev CPU (no VNNI).
+- **Long calls** (Gemini image/video) use `postJsonLong` (`node:https`, up to 20 min), because undici `fetch` has a 5-minute header timeout. fal.ai uses its queue (submit → poll `status_url` → `response_url`). Gemini Omni uses `delivery: "uri"`, then polls Files API state and downloads.
+- **Text:** `chat()` uses `LLM_PROVIDER`, or else the first configured provider (Gemini, then OpenAI-compatible). The companion sends the last 24 messages plus a live project context (`projectContext`, IDs included, ~40k chars max). The client calls `ws.saveNow()` before chat and assist so the server reads current data.
+- **Proposals:** the companion appends a ` ```wonderboy {"proposals":[…]} ``` ` block, and the assistant returns JSON. Both go through `normalizeProposal` (IDs validated against the project). `applyProposal` never deletes. A script replacement needs `replace: true`, which the UI sends only after `confirm()`. Scene updates and logline replacement also ask for confirmation.
+- **Honesty rules:** never claim consistency is guaranteed. Label text-only models as such. Never auto-trigger paid generation. Never fake success: errors from providers are surfaced (`explainHttpError` maps 400/401/402/404/429/5xx).
 
 ## API routes
 
-All are `POST`, return JSON, and have no auth or input validation beyond basic type checks.
-
-| Route | Request | Behaviour |
+| Route | Method | Behaviour |
 |---|---|---|
-| `/api/chat` | `{ message: string, project: {...} }` | No `GEMINI_API_KEY` → `200 { reply: "<not connected explanation>" }`. Otherwise it calls `gemini-2.0-flash:generateContent` with a system instruction that embeds the project JSON, then returns `{ reply }`, or `{ error }` with the upstream status / `502` on network failure. |
-| `/api/generate/image` | `{ prompt, projectStyle, references[] }` | Missing `IMAGE_API_URL`/`IMAGE_API_KEY` → `{ status: "not_configured", message }`. Present → `{ status: "adapter_required", message, receivedPrompt }`. **Never calls a provider.** |
-| `/api/generate/video` | same | Same pattern with `VIDEO_API_URL`/`VIDEO_API_KEY`. **Never calls a provider.** |
+| `/api/projects` | GET / POST | List summaries + `firstRun` / create `{ name, logline?, style?, starter? }` |
+| `/api/projects/[id]` | GET / PUT / DELETE | Document / `{project, revision}` → `{revision, updatedAt}` or `409` / delete everything |
+| `/api/projects/[id]/files` | POST | multipart `files` → `{ assets }` (200 MB max each) |
+| `/api/projects/[id]/files/[assetId]` | GET | Stream with Range, nosniff, sandbox CSP |
+| `/api/providers` | GET | `ProvidersResponse` |
+| `/api/projects/[id]/generations` | GET | `{ generations: (GenerationRecord & {progress})[] }` |
+| `/api/projects/[id]/generations` | POST | `GenerationRequest & {label}` → `202 { generation }`, or `400` with a reason |
+| `/api/projects/[id]/conversations` | GET / POST | List / create |
+| `/api/projects/[id]/conversations/[cid]` | PATCH / DELETE | Rename `{title}` / delete |
+| `/api/projects/[id]/conversations/[cid]/messages` | POST | `{message, focus?: {scriptId, sceneId}}` → `{conversation, provider}`. Persists both turns only on success |
+| `/api/projects/[id]/assist` | POST | `{task, instructions?, focus?}` → `{summary, proposals, provider}` (tasks are listed in `ASSIST_TASKS`) |
 
-The intended normalized generation response is `{ status, message, jobId?, outputUrl? }` (see `docs/PROVIDERS.md`).
+No auth (single local user). Environment variables are documented in `.env.example`.
 
-### Environment variables (`.env.example`)
+## Layout and styling
 
-`GEMINI_API_KEY`, `IMAGE_PROVIDER`, `IMAGE_API_URL`, `IMAGE_API_KEY`, `VIDEO_PROVIDER`, `VIDEO_API_URL`, `VIDEO_API_KEY`. All are optional. `*_PROVIDER` is not read anywhere yet. Never read secrets in client code (`page.tsx`) and never prefix them `NEXT_PUBLIC_`.
+- **App shell:** above 620px, the shell is viewport-height with a pinned sidebar, and only `.main-area` scrolls under a sticky topbar. At 620px and below, the page scrolls normally and the nav becomes a sticky strip. Breakpoints: 1100 / 900 / 620px.
+- **Tokens:** colours `--bg --panel --line --text --muted --gold --green`. Type scale `--fs-micro` 11 (the minimum) through `--fs-display`. Use tokens, never ad-hoc px.
+- **Common classes:** `.panel`, `.section-head`, `.button.primary|secondary`, `.field` inside `<label>`, `.form-grid(.three)`, `.chip`, `.item-card`, `.modal`, `.proposal`, `.gen-card`, `.status-pill`, `.provider-note`, `.setup-note`, `.error-text`.
 
-## Styling and typography conventions
+## Coding conventions
 
-- **Edit `src/app/globals.css`, organised by section:** tokens → base → app shell → shared components → per-view → responsive. Class names are plain and global (`.panel`, `.button.primary`, `.field`, `.eyebrow`, …). Reuse existing classes before adding new ones.
-- **Colour tokens:** `--bg --panel --panel2 --line --text --muted --gold --green`. The theme is dark-only with gold accents, so keep it that way.
-- **Font tokens:** `--font-sans` (body/UI), `--font-mono` (uppercase micro labels, meta, pills, footer), `--font-display` (Playfair; headings, numbers; weight 500).
-- **Type scale (use tokens, not ad-hoc px):**
-
-  | Token | px | Use |
-  |---|---|---|
-  | `--fs-micro` | 11 | Mono uppercase labels, eyebrows, pills, meta. **Nothing smaller than 11px** except decorative art |
-  | `--fs-xs` | 12 | Helper text, captions, tiny buttons |
-  | `--fs-sm` | 13 | Buttons, secondary text |
-  | `--fs-input` | 14 | Form fields (16px on mobile to stop iOS zoom) |
-  | `--fs-base` | 15 | Body copy, chat messages |
-  | `--fs-md` | 16 | Lead paragraphs |
-  | `--fs-lg` | 18 | Panel / card headings |
-  | `--fs-xl` | 22 | Topbar page title, feature headings |
-  | `--fs-2xl` | 28 | Section headings, stat numbers |
-  | `--fs-display` | clamp 34–46 | Overview hero only |
-
-- Form fields: `<label>` (mono micro caps) wrapping an input/textarea/select with `className="field"`.
-- Test at desktop, ~820px and ~390px widths. Nothing should scroll horizontally.
-
-## Coding conventions and guidelines
-
-- TypeScript strict. Don't use `any`; type API payloads inline as the existing routes do.
-- **Provider calls only happen server-side**, in `src/app/api/**`. UI components must never call vendor APIs or see keys.
-- Put new provider integrations behind an adapter with a normalized contract (see `docs/ARCHITECTURE.md` and `docs/PROVIDERS.md`). **Never trigger paid GPU inference automatically.** It needs an explicit user click and visible cost/limit info.
-- Don't add dependencies casually. The app intentionally runs on `next`/`react` only.
-- Keep `localStorage` key versioning (`…-v1`) in mind. If you change the `Project` shape, migrate old data or bump the key.
-- Escape apostrophes in JSX text (`&apos;`), because ESLint's `react/no-unescaped-entities` is on. `<img>` is used deliberately for data-URL previews, so the `no-img-element` warning is expected.
-- User-facing status goes through `setNotice(...)` (shown in the footer).
-- Update `docs/PROGRESS.md` when a feature's status changes.
+- TypeScript strict, no `any`. Validate untrusted JSON: `normalizeProject` for projects, `normalizeProposal` for model output, `cleanRef` for uploads to the generation API.
+- `src/lib/server/**` uses Node APIs. Import it only from route handlers. `projectModel.ts`, `continuity.ts`, `proposals.ts` and `ai/types.ts` must stay pure.
+- All project edits go through `ws.mutate(recipe, activity?)`. Put cascades in `projectModel.ts`.
+- New provider: implement the interface in `server/ai/{llm,image,video}.ts` with accurate caps, costs and a `conditioning` description, and add it to `PROVIDERS`. Verify request fields against the provider's current docs.
+- Don't render nested component definitions inside a component (they remount on every render). Use render helpers instead.
+- Escape apostrophes in JSX text. Use raw `<img>` for local file URLs, with an eslint-disable comment.
+- Update `docs/PROGRESS.md` and `docs/PROVIDERS.md` when integrations change.
 
 ## Limitations & unfinished work
 
-- **No real image/video generation.** The routes are safe placeholders.
-- **Storage is browser-only.** Data is per-browser and per-origin, and base64 images can hit the ~5–10 MB `localStorage` quota. The save effect calls `localStorage.setItem` with no `try/catch`, so a quota-exceeded write is an unhandled error inside a React effect. That likely breaks the page, and the user gets no friendly message. There's no import, cloud sync or database.
-- **Chat:** single-turn (history isn't sent to Gemini), not persisted, no streaming, no auto-scroll. The Gemini model name (`gemini-2.0-flash`) is hard-coded, and the API key is sent as a URL query parameter.
-- **Shots** can't be edited or reordered. Character/location linking fields exist in the type but have no UI.
-- **Settings provider status** is static text, not derived from env vars.
-- **Voice** is a browser prototype (recognition fills the input once; no realtime conversation).
-- No auth, multi-user, timeline editor, deployment config or automated tests.
-- Tabs are client state, not routes (no deep links, and the browser back button doesn't change tabs).
+- **Provider adapters are untested against live accounts.** No keys were configured during development, so each was written against current docs and the first real call is the real test. Cloudflare FLUX.2 form fields come from Cloudflare's changelog examples, because the official schema doesn't list them.
+- **No free video generation exists** among the integrated providers. All video is paid. The self-hosted GPU provider meant to make it cheap isn't built yet.
+- **Consistency is improved, not guaranteed.** There's no LoRA or identity training.
+- Job execution is in-process. A server restart interrupts running jobs (they're marked failed), and there's no cancel button.
+- Chat isn't streamed. The companion only sees the saved project (the client saves first) and the last 24 messages.
+- Companion voice chat uses browser APIs (Chrome/Edge are best). There's no realtime speech-to-speech model.
+- Kokoro TTS on an old laptop CPU renders about 3× slower than real time, and only English is local. Gemini TTS (Hindi) isn't live-tested yet, and its free-tier limits are unpublished.
+- `npm audit` reports high-severity advisories in `postcss` (via Next) and `sharp` (via Next and transformers). These are image-processing paths the app doesn't expose to untrusted input. Review when upgrading Next.
+- Local single-user storage: no auth or cloud sync. Back up `data/` yourself. Export is JSON only, and there's no import. Uploads are buffered in memory (200 MB cap), and files never saved to the document can become orphans.
+- Tabs aren't URL routes. No timeline editor and no automated tests.
