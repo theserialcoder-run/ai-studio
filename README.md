@@ -17,6 +17,10 @@ npm run dev
 
 Open http://localhost:3000.
 
+### Start from a desktop icon (Linux)
+
+Run `bash scripts/install-launcher.sh` once. It adds **Wonderboy AI Studio** to the applications menu and the desktop. Double-click it to start the app; your browser opens automatically. A terminal window shows that it's running: close it to stop Wonderboy. The launcher rebuilds the app only when the code has changed (about a minute), and just opens the browser if Wonderboy is already running.
+
 The core workspace works without API keys. To enable AI features, follow the quick start in `docs/PROVIDERS.md` (Gemini key for text, Cloudflare token for free image generation), then restart the dev server.
 
 ## Current capabilities
