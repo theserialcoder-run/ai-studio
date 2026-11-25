@@ -27,6 +27,10 @@ A private AI filmmaking workspace combining an AI creative companion, scriptwrit
 - [x] **Image-to-video / text-to-video** with duration, aspect ratio, resolution; start frame from generated or uploaded images; saved to project + shot
 - [x] Generation jobs with status, progress, errors, retry; paid providers require explicit cost approval (enforced server-side)
 
+- [x] **Voice Studio (text-to-speech):** narration/dialogue to WAV, load text from scenes, attach to a shot, voice + speed (Kokoro) or style direction + expressive tags (Gemini), history with players, download, retry; outputs saved to the asset library and shot takes
+- [x] **Free local TTS:** Kokoro-82M on the CPU (English, unlimited, Apache-2.0), tested end to end
+- [x] Hindi TTS via Gemini 3.8 Flash TTS (free tier), with automatic Hindi detection in the UI
+
 ### Integration status (see docs/PROVIDERS.md)
 | Integration | Status |
 |---|---|
@@ -37,6 +41,8 @@ A private AI filmmaking workspace combining an AI creative companion, scriptwrit
 | Gemini Omni Flash video (paid) | Implemented against current docs; needs billing; not live-tested |
 | fal.ai Kling / Wan video (paid) | Implemented against queue API docs; needs credits; not live-tested |
 | Hugging Face Inference Providers (images/video) | Not implemented (no free credits for free accounts since Oct 2026); HF usable for text via OpenAI-compatible |
+| Kokoro local TTS (English) | **Working** — verified end to end (12.9 s WAV in 44 s incl. model load on an i5-7200U, ~1 GB peak RAM) |
+| Gemini TTS (Hindi + multilingual, free tier) | Implemented against current docs; not live-tested |
 | Free video generation | Unavailable — no integrated provider offers it |
 
 ## Next: self-hosted GPU generation (planned — not built yet)

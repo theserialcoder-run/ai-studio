@@ -32,6 +32,26 @@ export interface VideoCaps {
   imageMaxSide: number;
 }
 
+export interface VoiceOption {
+  id: string;
+  label: string; // e.g. "Heart — female, US (grade A)"
+  language: string; // e.g. "en-us", "multilingual"
+  gender: "Female" | "Male" | "Neutral";
+  quality?: string; // provider grade, if any
+}
+
+export interface AudioCaps {
+  languages: string[]; // human-readable, e.g. ["English (US)", "Hindi", …]
+  voices: VoiceOption[];
+  speed: { min: number; max: number; default: number } | null;
+  /** Accepts a natural-language delivery/style instruction (e.g. "warm, slow, documentary narrator"). */
+  style: boolean;
+  /** Inline expressive tags supported in the text, e.g. "<laugh>". */
+  inlineTags: string[];
+  maxChars: number;
+  runsLocally: boolean;
+}
+
 export interface ProviderInfo {
   id: string;
   label: string;
@@ -49,12 +69,14 @@ export interface ProviderInfo {
 export interface ImageProviderInfo extends ProviderInfo { kind: "image"; caps: ImageCaps }
 export interface VideoProviderInfo extends ProviderInfo { kind: "video"; caps: VideoCaps }
 export interface LlmProviderInfo extends ProviderInfo { kind: "llm" }
+export interface AudioProviderInfo extends ProviderInfo { kind: "audio"; caps: AudioCaps }
 
 export interface ProvidersResponse {
   llm: LlmProviderInfo[];
   activeLlm: string | null;
   image: ImageProviderInfo[];
   video: VideoProviderInfo[];
+  audio: AudioProviderInfo[];
 }
 
 /** A reference image sent from the browser (already downscaled). */
@@ -82,13 +104,20 @@ export interface VideoSettings {
   generateAudio?: boolean;
 }
 
+export interface AudioSettings {
+  voice: string;
+  speed?: number;
+  style?: string;
+}
+
 export interface GenerationRequest {
-  type: "image" | "video";
+  type: "image" | "video" | "audio";
   providerId: string;
   prompt: string;
   negativePrompt?: string;
   imageSettings?: ImageSettings;
   videoSettings?: VideoSettings;
+  audioSettings?: AudioSettings;
   references: ReferenceInput[];
   /** Image-to-image source, or the start frame for image-to-video. */
   sourceImage?: ReferenceInput | null;
@@ -102,7 +131,7 @@ export type GenerationStatus = "running" | "succeeded" | "failed";
 /** Persisted record of one generation job (data/projects/<id>/generations.json). */
 export interface GenerationRecord {
   id: ID;
-  type: "image" | "video";
+  type: "image" | "video" | "audio";
   providerId: string;
   providerLabel: string;
   model: string;
@@ -112,6 +141,7 @@ export interface GenerationRecord {
   negativePrompt: string;
   imageSettings: ImageSettings | null;
   videoSettings: VideoSettings | null;
+  audioSettings?: AudioSettings | null;
   references: { assetId: ID; role: string; label: string }[];
   sourceAssetId: ID | null;
   shotId: ID | null;

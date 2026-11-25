@@ -644,6 +644,9 @@ button.stat-card:hover { border-color: #4a4535; }
 .asset-preview { display: block; width: 100%; height: 120px; object-fit: cover; background: #10100e; }
 .asset-preview.icon { display: grid; place-items: center; color: var(--gold); font-size: 30px; background: linear-gradient(135deg, #2e2d27, #1b1b17); }
 .asset-preview.icon audio { width: 90%; }
+.asset-preview.icon.audio { height: auto; min-height: 72px; padding: 8px 0; font-size: var(--fs-sm); }
+.audio-player { display: grid; gap: 4px; width: 100%; justify-items: center; }
+.audio-player audio { width: 100%; max-width: 100%; }
 .ref-images .button-row { margin-top: 12px; }
 .thumb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
 .thumb { margin: 0; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; background: #141411; }
@@ -759,6 +762,13 @@ button.stat-card:hover { border-color: #4a4535; }
 .gen-outputs { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin: 8px 0; }
 .gen-output .asset-preview { height: auto; aspect-ratio: 16 / 10; border-radius: 4px; }
 .gen-output .row-actions { margin-top: 4px; }
+
+/* Voice studio */
+.prompt-editor.tall { min-height: 220px; }
+.audio-output { display: grid; gap: 4px; margin: 8px 0; }
+.audio-output audio { width: 100%; }
+.tag-row { align-items: center; margin: -4px 0 10px; }
+.range { width: 100%; accent-color: var(--gold); margin-top: 10px; }
 
 /* ==========================================================================
    Responsive

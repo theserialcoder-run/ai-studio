@@ -22,7 +22,8 @@ export async function GET(req: Request, { params }: Ctx) {
       "Accept-Ranges": "bytes",
       "Cache-Control": "private, max-age=31536000, immutable", // asset files never change
       "X-Content-Type-Options": "nosniff",
-      "Content-Security-Policy": "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
+      // Audio/video can't run scripts; sandboxing them only breaks the browser's built-in player when opened in a tab.
+      "Content-Security-Policy": `default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'${/^(audio|video)\//.test(file.mimeType) ? "" : "; sandbox"}`,
       "Content-Disposition": INLINE.test(file.mimeType) ? "inline" : "attachment",
     };
 

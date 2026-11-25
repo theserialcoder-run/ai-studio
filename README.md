@@ -29,6 +29,7 @@ The core workspace works without API keys. To enable AI features, follow the qui
 - Continuity links per shot and a structured continuity bundle for future generation providers
 - AI Companion (multi-turn, per-project history, voice in/out) and AI Script Assistant with review-before-apply proposals
 - Image generation (Cloudflare FLUX.2 free allocation with reference images; Gemini paid) and video generation (Gemini Omni / fal.ai, paid)
+- Voice Studio: free unlimited English text-to-speech on your own computer (Kokoro), Hindi and other languages via Gemini TTS free tier
 - Project JSON export
 
 Projects and uploaded files are saved on disk in `data/` (git-ignored). Back this folder up.

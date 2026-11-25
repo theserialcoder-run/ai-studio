@@ -15,6 +15,7 @@ The AI engine (all server-side, provider-independent):
 - **Script Assistant:** ideas, loglines, outlines, full scripts, script/scene improvement, dialogue rewrites, scene breakdowns, shot lists, character and location suggestions. All of these come back as reviewable proposals.
 - **Image generation:** Cloudflare FLUX.2 (free daily allocation, up to 4 reference images), FLUX.1 schnell (text-only), Gemini Nano Banana (paid, up to 14 references). Supports image-to-image.
 - **Video generation:** Gemini Omni Flash (paid: text-, image- and reference-to-video) and fal.ai (paid: Kling image-to-video, Wan text-to-video).
+- **Voice (text-to-speech):** Kokoro-82M runs **locally on the CPU** (free, unlimited, English, Apache-2.0; tested and working). Gemini 3.8 Flash TTS covers Hindi and 100+ languages on the free tier.
 
 See `docs/PROVIDERS.md` for setup, costs and per-integration status.
 
@@ -36,7 +37,8 @@ Other docs: `docs/PROGRESS.md` (feature status; update it after meaningful chang
 | AI | Plain `fetch` / `node:https` REST calls to Gemini (generateContent + Interactions API), Cloudflare Workers AI, fal.ai queue, and any OpenAI-compatible endpoint. **No SDKs** |
 | Voice | Browser `SpeechRecognition` + `speechSynthesis` |
 | Lint | ESLint 9 flat config (`eslint.config.mjs`) |
-| Runtime deps | Only `next`, `react` and `react-dom`. Keep it that way unless there is a strong reason |
+| Runtime deps | `next`, `react`, `react-dom`, plus `kokoro-js` and `@huggingface/transformers` for local TTS (approved: free, offline speech). Add nothing else without a strong reason |
+| Native/external | `next.config.ts` marks `kokoro-js`, `@huggingface/transformers`, `onnxruntime-node` and `phonemizer` as `serverExternalPackages`, because they load native binaries and package-relative files. `.npmrc` skips onnxruntime's CUDA download |
 
 ## Commands
 
@@ -79,6 +81,7 @@ src/
     ScriptStudio.tsx, ScriptAssistant.tsx
     ShotPlanner.tsx, ContinuityPicker.tsx, CharacterLibrary.tsx, LocationLibrary.tsx, AssetLibrary.tsx
     GenerationStudio.tsx             Image/Video Studio: provider, shot/refs, source/start frame, settings, jobs
+    VoiceStudio.tsx                  Text-to-speech: engine/voice, speed or style, text from scenes, shot link, history
     DashboardView.tsx, ProjectsView.tsx, SettingsView.tsx (incl. AI providers panel)
   lib/
     types.ts                         Domain types
@@ -95,6 +98,7 @@ src/
     server/ai/llm.ts                 Gemini generateContent + OpenAI-compatible; chat()
     server/ai/image.ts               Cloudflare FLUX.2 klein/dev, FLUX.1 schnell, Gemini image (Interactions API)
     server/ai/video.ts               Gemini Omni Flash (Interactions API), fal.ai queue (Kling/Wan)
+    server/ai/audio.ts               TTS: Kokoro (local, lazy-loaded, 1 job at a time, idle unload) + Gemini TTS; WAV utils
     server/generations.ts            Job validation (caps, paid approval), background runner, records
     server/assistant.ts              Project context builder, companion prompt, conversations, script-assistant tasks
 data/                                Runtime data (git-ignored)
@@ -108,6 +112,7 @@ data/projects/<id>/project.json.bak      previous version
 data/projects/<id>/files/<assetId>.<ext> uploaded and generated files
 data/projects/<id>/generations.json      generation job records (server-owned)
 data/projects/<id>/conversations.json    AI conversations (server-owned)
+data/models/                             Kokoro model cache (downloaded on first TTS use)
 ```
 
 - `project.json` is written by the client through `PUT`, with optimistic concurrency (a `409` triggers a reload banner). Side files are written only by the server under a per-file lock, so they never conflict with client saves.
@@ -126,6 +131,9 @@ data/projects/<id>/conversations.json    AI conversations (server-owned)
 - **Providers** are server-side adapters with honest capability descriptors (`ImageCaps`/`VideoCaps` in `src/lib/ai/types.ts`): max reference images (0 = text-only), image-to-image / image-to-video, aspect ratios, sizes, durations, resolutions, `referenceMaxSide`, and cost per second. `GET /api/providers` exposes `configured`, `billing` (`free-allocation`/`paid`), `costNote`, `requirements`, `setup` and `conditioning`, all derived from env. The UI is driven entirely by this, so adding a provider requires no UI changes.
 - **References:** the browser picks reference images from the shot's continuity bundle (`buildContinuityBundle`, ordered primary identity → wardrobe → location angle → location → shot refs). It downscales them with a canvas (`prepareImage`, ≤511px for Cloudflare FLUX.2) and sends them as base64 JPEG. Adapters label each image in the prompt (FLUX.2: "image N = …", Gemini: a text part before each image).
 - **Jobs:** `POST /generations` validates against caps, requires `approvedPaid: true` for paid providers, stores a `running` record and runs in the background (max 3 concurrent per server). The client polls every 3 s while jobs run. Jobs interrupted by a server restart are marked failed, with advice to check the provider dashboard. Paid jobs are never retried automatically.
+- **Audio** jobs use the same pipeline (`type: "audio"`, `audioSettings: {voice, speed?, style?}`) and produce WAV assets.
+  - Kokoro gotcha: `kokoro-js` 1.2.x `stream(string)` never finishes, because it doesn't close its splitter. Always pass a closed `TextSplitterStream`.
+  - fp32 is the default dtype because it was ~2× faster than q8 on the dev CPU (no VNNI).
 - **Long calls** (Gemini image/video) use `postJsonLong` (`node:https`, up to 20 min), because undici `fetch` has a 5-minute header timeout. fal.ai uses its queue (submit → poll `status_url` → `response_url`). Gemini Omni uses `delivery: "uri"`, then polls Files API state and downloads.
 - **Text:** `chat()` uses `LLM_PROVIDER`, or else the first configured provider (Gemini, then OpenAI-compatible). The companion sends the last 24 messages plus a live project context (`projectContext`, IDs included, ~40k chars max). The client calls `ws.saveNow()` before chat and assist so the server reads current data.
 - **Proposals:** the companion appends a ` ```wonderboy {"proposals":[…]} ``` ` block, and the assistant returns JSON. Both go through `normalizeProposal` (IDs validated against the project). `applyProposal` never deletes. A script replacement needs `replace: true`, which the UI sends only after `confirm()`. Scene updates and logline replacement also ask for confirmation.
@@ -172,6 +180,8 @@ No auth (single local user). Environment variables are documented in `.env.examp
 - **Consistency is improved, not guaranteed.** There's no LoRA or identity training.
 - Job execution is in-process. A server restart interrupts running jobs (they're marked failed), and there's no cancel button.
 - Chat isn't streamed. The companion only sees the saved project (the client saves first) and the last 24 messages.
-- Voice uses browser APIs (Chrome/Edge are best). There's no realtime speech-to-speech model.
+- Companion voice chat uses browser APIs (Chrome/Edge are best). There's no realtime speech-to-speech model.
+- Kokoro TTS on an old laptop CPU renders about 3× slower than real time, and only English is local. Gemini TTS (Hindi) isn't live-tested yet, and its free-tier limits are unpublished.
+- `npm audit` reports high-severity advisories in `postcss` (via Next) and `sharp` (via Next and transformers). These are image-processing paths the app doesn't expose to untrusted input. Review when upgrading Next.
 - Local single-user storage: no auth or cloud sync. Back up `data/` yourself. Export is JSON only, and there's no import. Uploads are buffered in memory (200 MB cap), and files never saved to the document can become orphans.
 - Tabs aren't URL routes. No timeline editor and no automated tests.

@@ -60,7 +60,7 @@ export function useAi(ws: Workspace) {
         const s = d.shots.find(x => x.id === g.shotId);
         if (s) for (const o of g.outputs) if (!s.generatedAssetIds.includes(o.id)) s.generatedAssetIds.push(o.id);
         if (!d.importedGenerationIds.includes(g.id)) d.importedGenerationIds.push(g.id);
-      }, `Generated ${g.outputs.length > 1 ? `${g.outputs.length} ${g.type}s` : `a ${g.type}`} with ${g.providerLabel}${shot ? ` for shot ${shotNumber(project, shot)}` : ""}`);
+      }, `Generated ${g.type === "audio" ? "voiceover" : g.outputs.length > 1 ? `${g.outputs.length} ${g.type}s` : `a ${g.type}`} with ${g.providerLabel}${shot ? ` for shot ${shotNumber(project, shot)}` : ""}`);
     }
   }, [generations, project, mutate]);
 

@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import type { GenerationRecord, GenerationRequest, ReferenceInput } from "../ai/types";
 import { nowIso } from "../projectModel";
+import { audioProvider } from "./ai/audio";
 import { imageProvider } from "./ai/image";
 import { ProviderError } from "./ai/http";
 import { videoProvider } from "./ai/video";
@@ -55,7 +56,7 @@ export async function startGeneration(projectId: string, raw: unknown, outputLab
   const req = (raw ?? {}) as Partial<GenerationRequest>;
   const prompt = typeof req.prompt === "string" ? req.prompt.trim() : "";
   if (!prompt) bad("Write a prompt first.");
-  if (prompt.length > 20_000) bad("Prompt is too long (max 20,000 characters).");
+  if (prompt.length > 20_000) bad("Text is too long (max 20,000 characters).");
   if (active.size >= MAX_ACTIVE) bad(`${MAX_ACTIVE} generations are already running. Wait for one to finish.`);
   const negativePrompt = typeof req.negativePrompt === "string" ? req.negativePrompt.slice(0, 2000) : "";
   const references = (Array.isArray(req.references) ? req.references : []).map(cleanRef);
@@ -63,7 +64,7 @@ export async function startGeneration(projectId: string, raw: unknown, outputLab
   const shotId = typeof req.shotId === "string" ? req.shotId : null;
 
   let run: (onProgress: (m: string) => void) => Promise<{ files: { data: Buffer; mimeType: string }[]; notes: string }>;
-  let base: Pick<GenerationRecord, "type" | "providerId" | "providerLabel" | "model" | "imageSettings" | "videoSettings" | "costEstimate">;
+  let base: Pick<GenerationRecord, "type" | "providerId" | "providerLabel" | "model" | "imageSettings" | "videoSettings" | "costEstimate"> & Partial<Pick<GenerationRecord, "audioSettings">>;
 
   if (req.type === "image") {
     const p = imageProvider(String(req.providerId));
@@ -102,8 +103,22 @@ export async function startGeneration(projectId: string, raw: unknown, outputLab
       const r = await p.generate({ prompt, negativePrompt, settings, startImage: source, references }, onProgress);
       return { files: [{ data: r.data, mimeType: r.mimeType }], notes: r.notes };
     };
+  } else if (req.type === "audio") {
+    const p = audioProvider(String(req.providerId));
+    if (!p) bad("Unknown voice provider.");
+    const info = p.info();
+    if (!info.configured) bad(`${info.label} is not configured: set ${info.requirements.join(", ")} in .env.local and restart.`);
+    if (prompt.length > info.caps.maxChars) bad(`${info.label} accepts at most ${info.caps.maxChars} characters per generation.`);
+    const s = req.audioSettings ?? { voice: "" };
+    if (!info.caps.voices.some(v => v.id === s.voice)) bad("Choose a voice.");
+    const settings = { voice: s.voice, speed: info.caps.speed ? s.speed ?? info.caps.speed.default : undefined, style: info.caps.style ? String(s.style ?? "").slice(0, 500) : undefined };
+    base = { type: "audio", providerId: info.id, providerLabel: info.label, model: info.model, imageSettings: null, videoSettings: null, audioSettings: settings, costEstimate: p.estimate({ text: prompt, settings }) };
+    run = async onProgress => {
+      const r = await p.generate({ text: prompt, settings }, onProgress);
+      return { files: [{ data: r.data, mimeType: r.mimeType }], notes: r.notes };
+    };
   } else {
-    bad("type must be image or video.");
+    bad("type must be image, video or audio.");
   }
 
   const record: GenerationRecord = {

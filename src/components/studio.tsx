@@ -7,7 +7,7 @@ import type { AiState } from "@/lib/client/useAi";
 import type { Asset, AssetKind, ID, Project } from "@/lib/types";
 
 export const TABS = [
-  "Overview", "Projects", "AI Companion", "Script", "Shots", "Characters", "Locations", "Assets", "Image Studio", "Video Studio", "Settings",
+  "Overview", "Projects", "AI Companion", "Script", "Shots", "Characters", "Locations", "Assets", "Image Studio", "Video Studio", "Voice Studio", "Settings",
 ] as const;
 export type Tab = (typeof TABS)[number];
 
@@ -92,8 +92,26 @@ export function AssetPreview({ asset, controls }: { asset: Asset; controls?: boo
     return <img className="asset-preview" src={url} alt={asset.name} loading="lazy" />;
   }
   if (asset.kind === "video") return <video className="asset-preview" src={url} controls={controls} preload="metadata" muted={!controls} />;
-  if (asset.kind === "audio" && controls) return <div className="asset-preview icon"><audio src={url} controls preload="none" /></div>;
+  if (asset.kind === "audio" && controls) return <div className="asset-preview icon audio"><AudioPlayer src={url} /></div>;
   return <div className="asset-preview icon">{KIND_ICON[asset.kind]}</div>;
+}
+
+const MEDIA_ERRORS: Record<number, string> = {
+  1: "playback was stopped",
+  2: "a network error interrupted loading",
+  3: "the browser could not decode this file",
+  4: "the browser can't play this file or couldn't load it",
+};
+
+/** Audio element that shows why playback failed instead of failing silently. */
+export function AudioPlayer({ src }: { src: string }) {
+  const [error, setError] = useState("");
+  return (
+    <span className="audio-player">
+      <audio src={src} controls preload="metadata" onError={e => setError(MEDIA_ERRORS[e.currentTarget.error?.code ?? 4] ?? "unknown error")} onLoadedMetadata={() => setError("")} />
+      {error && <small className="error-text">Can&apos;t play: {error}. <a href={src} target="_blank" rel="noreferrer">Open the file</a> or download it.</small>}
+    </span>
+  );
 }
 
 export function assetLabel(a: Asset) {
@@ -176,7 +194,7 @@ export function ReferenceImages({ assetIds, primaryId, link, unlink, setPrimary,
         : <div className="thumb-grid">
             {assets.map(a => (
               <figure key={a.id} className={`thumb${primaryId === a.id ? " primary" : ""}`}>
-                <AssetPreview asset={a} />
+                <AssetPreview asset={a} controls={a.kind === "audio" || a.kind === "video"} />
                 <figcaption>
                   <span title={a.name}>{a.name}</span>
                   <span className="thumb-actions">

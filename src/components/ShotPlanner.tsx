@@ -173,7 +173,7 @@ function ShotCard({ project, shot, editing, onToggle }: { project: Project; shot
           {shot.generatedAssetIds.length === 0
             ? <p className="muted small">Nothing generated yet. Use Image studio or Video studio above.</p>
             : <ReferenceImages
-                assetIds={shot.generatedAssetIds} kinds={["image", "video"]} accept="image/*,video/*" activity={`Updated generated takes for ${name}`}
+                assetIds={shot.generatedAssetIds} kinds={["image", "video", "audio"]} accept="image/*,video/*,audio/*" activity={`Updated generated takes for ${name}`}
                 link={(d, ids) => { const s = d.shots.find(x => x.id === shot.id); if (s) s.generatedAssetIds = [...new Set([...s.generatedAssetIds, ...ids])]; }}
                 unlink={(d, id) => { const s = d.shots.find(x => x.id === shot.id); if (s) s.generatedAssetIds = s.generatedAssetIds.filter(a => a !== id); }}
               />}

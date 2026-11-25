@@ -12,6 +12,20 @@ Research for this guide was done in November 2026, and provider offerings change
 
 That gives you working chat, the script assistant, and reference-conditioned image generation, all within free allocations. **There is no free video option** (see below).
 
+## Voice (text-to-speech)
+
+| Engine (id) | Languages | Cost | Licence | Status |
+|---|---|---|---|---|
+| **Kokoro-82M, local** (`kokoro`) | English (US + UK), 28 voices (best: Heart, Bella; UK: Emma) | **Free, unlimited, offline** | Apache-2.0 weights: commercial use OK | **Working**, tested end to end on this laptop |
+| **Gemini 3.8 Flash TTS** (`gemini-tts`) | 100+ incl. **Hindi** (auto-detected), 30 voices, style direction, tags like `<laugh>` | Free tier (daily limits unpublished; 429 when reached). Free-tier inputs may be used by Google | Google API terms | Implemented against current docs; needs `GEMINI_API_KEY`; not live-tested |
+
+- Kokoro runs inside the Wonderboy server process on the CPU: one job at a time, about 0.8–1 GB RAM while generating, unloaded after 10 idle minutes.
+- First use downloads the model to `data/models` (~330 MB for fp32, the default; ~90 MB for q8).
+- Measured on an Intel i5-7200U: fp32 renders about 2.7× slower than real time (a 5-minute narration ≈ 15 minutes in the background), and q8 was about 2× slower again. Set `KOKORO_DTYPE=q8` only to save RAM.
+- `kokoro-js` only ships English phonemization, so Hindi goes to Gemini TTS. The Voice Studio detects Devanagari text and offers to switch.
+- Ruled out for commercial YouTube use: F5-TTS (CC-BY-NC), XTTS-v2 (Coqui non-commercial licence) and the ElevenLabs free tier (no commercial use). Chatterbox is unmaintained.
+- **Install note:** `onnxruntime-node` tries to download CUDA binaries during `npm install` (that download 404s, and the GPU build isn't needed). `.npmrc` sets `onnxruntime-node-install-cuda=skip`. If a future npm ignores that key, install with `ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install`.
+
 ## What is implemented
 
 | Area | Provider (id) | Model(s) | Cost | References / conditioning | Status |

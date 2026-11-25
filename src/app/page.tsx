@@ -14,11 +14,12 @@ import { ProjectsView } from "@/components/ProjectsView";
 import { ScriptStudio } from "@/components/ScriptStudio";
 import { SettingsView, exportProjectJson } from "@/components/SettingsView";
 import { ShotPlanner } from "@/components/ShotPlanner";
+import { VoiceStudio } from "@/components/VoiceStudio";
 import { StudioContext, TABS, type StudioCtx, type Tab } from "@/components/studio";
 
 const ICONS: Record<Tab, string> = {
   Overview: "◫", Projects: "▦", "AI Companion": "✳", Script: "≡", Shots: "▤", Characters: "◉", Locations: "⌂",
-  Assets: "◈", "Image Studio": "▧", "Video Studio": "▷", Settings: "⚙",
+  Assets: "◈", "Image Studio": "▧", "Video Studio": "▷", "Voice Studio": "♪", Settings: "⚙",
 };
 
 export default function Home() {
@@ -107,6 +108,7 @@ export default function Home() {
             {view === "Assets" && <AssetLibrary key={ctx.project.id} />}
             {view === "Image Studio" && <GenerationStudio key={`img-${ctx.project.id}`} mode="image" />}
             {view === "Video Studio" && <GenerationStudio key={`vid-${ctx.project.id}`} mode="video" />}
+            {view === "Voice Studio" && <VoiceStudio key={`voice-${ctx.project.id}`} />}
             {view === "Settings" && <SettingsView />}
           </StudioContext.Provider>
         )}

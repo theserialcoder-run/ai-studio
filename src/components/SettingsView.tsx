@@ -5,7 +5,7 @@ import { useStudio } from "./studio";
 function ProviderRow({ p, kind, active }: { p: ProviderInfo; kind: string; active?: boolean }) {
   return (
     <div className="provider-row">
-      <span className="provider-icon">{kind === "llm" ? "✳" : kind === "image" ? "▧" : "▷"}</span>
+      <span className="provider-icon">{kind === "llm" ? "✳" : kind === "image" ? "▧" : kind === "audio" ? "♪" : "▷"}</span>
       <div>
         <b>{p.label}{active ? " · in use" : ""}</b>
         <small>{p.vendor} · <code>{p.model}</code></small>
@@ -33,6 +33,8 @@ function ProvidersPanel() {
         {prov.image.map(p => <ProviderRow key={p.id} p={p} kind="image" />)}
         <span className="field-label">VIDEO</span>
         {prov.video.map(p => <ProviderRow key={p.id} p={p} kind="video" />)}
+        <span className="field-label">VOICE (TEXT-TO-SPEECH)</span>
+        {prov.audio.map(p => <ProviderRow key={p.id} p={p} kind="audio" />)}
       </>}
       <p className="muted small">Keys live only in <code>.env.local</code> on the server (never in the browser). After editing it, restart the server and press Refresh. Paid providers always ask for confirmation before each generation. Full guide: docs/PROVIDERS.md.</p>
     </div>
