@@ -1,6 +1,7 @@
 // Image generation providers. Server-only. Each adapter declares honest
 // capabilities: whether reference images actually condition the model.
 import type { ImageCaps, ImageProviderInfo, ImageSettings, ReferenceInput } from "../../ai/types";
+import { comfyImageProviders } from "./comfyui";
 import { env, errorDetail, explainHttpError, postJsonLong, ProviderError, sniffImageMime } from "./http";
 
 export interface ImageJob {
@@ -16,7 +17,7 @@ export interface ImageResult { images: ImageOutput[]; notes: string }
 export interface ImageProvider {
   info(): ImageProviderInfo;
   estimate(settings: ImageSettings): string;
-  generate(job: ImageJob): Promise<ImageResult>;
+  generate(job: ImageJob, onProgress?: (message: string) => void): Promise<ImageResult>;
 }
 
 const RATIOS_COMMON = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"];
@@ -215,6 +216,7 @@ const geminiImage: ImageProvider = {
 };
 
 const PROVIDERS: ImageProvider[] = [
+  ...comfyImageProviders,
   cfFlux2("cloudflare-flux-2-klein", "@cf/black-forest-labs/flux-2-klein-9b", "FLUX.2 [klein] 9B (Cloudflare)",
     "≈ 1,364 neurons per 1-megapixel image + ≈ 182 per reference (≈ 7 images/day on the free allocation).", null),
   cfFlux2("cloudflare-flux-2-dev", "@cf/black-forest-labs/flux-2-dev", "FLUX.2 [dev] (Cloudflare)",

@@ -2,7 +2,7 @@
 import { fileUrl } from "../projectModel";
 import type { Proposal } from "../proposals";
 import type { Asset, ID } from "../types";
-import type { Conversation, GenerationRecord, GenerationRequest, ProvidersResponse, ReferenceInput } from "../ai/types";
+import type { ComfyStatus, Conversation, GenerationRecord, GenerationRequest, ProvidersResponse, ReferenceInput } from "../ai/types";
 
 export type GenerationView = GenerationRecord & { progress: string | null };
 
@@ -21,6 +21,8 @@ const post = (body: unknown, method = "POST"): RequestInit => ({ method, headers
 
 export const aiApi = {
   providers: () => call<ProvidersResponse>("/api/providers"),
+  comfyStatus: (check: boolean) => call<ComfyStatus>(`/api/comfyui${check ? "?check=1" : ""}`),
+  saveComfy: (body: { url: string; authHeader?: string; clearAuth?: boolean }) => call<ComfyStatus>("/api/comfyui", post(body, "PUT")),
   generations: (pid: ID) => call<{ generations: GenerationView[] }>(`/api/projects/${pid}/generations`).then(d => d.generations),
   generate: (pid: ID, req: GenerationRequest & { label: string }) => call<{ generation: GenerationRecord }>(`/api/projects/${pid}/generations`, post(req)).then(d => d.generation),
   conversations: (pid: ID) => call<{ conversations: Conversation[] }>(`/api/projects/${pid}/conversations`).then(d => d.conversations),

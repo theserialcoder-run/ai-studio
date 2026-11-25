@@ -80,8 +80,8 @@ export async function startGeneration(projectId: string, raw: unknown, outputLab
     if (info.billing === "paid" && req.approvedPaid !== true) bad(`${info.label} is a paid service. Approve the estimated cost to continue.`);
     const settings = { aspectRatio: s.aspectRatio, size: s.size, steps: s.steps, seed: s.seed, guidance: s.guidance, count: Math.min(4, Math.max(1, s.count ?? 1)) };
     base = { type: "image", providerId: info.id, providerLabel: info.label, model: info.model, imageSettings: settings, videoSettings: null, costEstimate: p.estimate(settings) };
-    run = async () => {
-      const r = await p.generate({ prompt, negativePrompt, settings, references, source });
+    run = async onProgress => {
+      const r = await p.generate({ prompt, negativePrompt, settings, references, source }, onProgress);
       return { files: r.images, notes: r.notes };
     };
   } else if (req.type === "video") {

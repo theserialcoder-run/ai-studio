@@ -2,7 +2,12 @@
 // No secrets and no Node/browser APIs in this file.
 import type { Asset, ID } from "../types";
 
-export type Billing = "free-allocation" | "paid";
+/** "self-hosted" = your own GPU (e.g. ComfyUI on RunPod): billed by the hour by your host, no per-job charge. */
+export type Billing = "free-allocation" | "paid" | "self-hosted";
+
+export function billingLabel(b: Billing): string {
+  return b === "paid" ? "paid" : b === "self-hosted" ? "your GPU" : "free allocation";
+}
 
 export interface ImageCaps {
   /** Max reference images the model can be conditioned on. 0 = text-only model. */
@@ -167,4 +172,13 @@ export interface Conversation {
   messages: StoredMessage[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** ComfyUI GPU connection status (GET /api/comfyui). Never contains the auth header. */
+export interface ComfyWorkflowStatus { id: string; label: string; ready: boolean; files: { folder: string; name: string; present: boolean; url: string; optional?: string }[] }
+export interface ComfyStatus {
+  url: string;
+  hasAuth: boolean;
+  source: "settings" | "env" | null;
+  check?: { ok: boolean; error?: string; comfyVersion?: string; gpu?: string; vramTotalGb?: number; vramFreeGb?: number; workflows?: ComfyWorkflowStatus[] };
 }

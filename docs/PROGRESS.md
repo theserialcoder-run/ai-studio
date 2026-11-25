@@ -31,6 +31,9 @@ A private AI filmmaking workspace combining an AI creative companion, scriptwrit
 - [x] **Free local TTS:** Kokoro-82M on the CPU (English, unlimited, Apache-2.0), tested end to end
 - [x] Hindi TTS via Gemini 3.8 Flash TTS (free tier), with automatic Hindi detection in the UI
 
+- [x] **Your GPU (ComfyUI) image providers:** Z-Image Turbo (fast text-to-image, up to 1920×1088) and Qwen-Image-Edit 2511 (up to 3 reference/source pictures, fast Lightning mode or full steps). No per-image cost
+- [x] **Settings → ComfyUI GPU:** paste the pod address (saved in `data/settings.json`, no restart), optional auth header, connection test showing GPU, VRAM, ComfyUI version and missing model files with copyable download commands
+
 ### Integration status (see docs/PROVIDERS.md)
 | Integration | Status |
 |---|---|
@@ -43,13 +46,16 @@ A private AI filmmaking workspace combining an AI creative companion, scriptwrit
 | Hugging Face Inference Providers (images/video) | Not implemented (no free credits for free accounts since Oct 2026); HF usable for text via OpenAI-compatible |
 | Kokoro local TTS (English) | **Working** — verified end to end (12.9 s WAV in 44 s incl. model load on an i5-7200U, ~1 GB peak RAM) |
 | Gemini TTS (Hindi + multilingual, free tier) | Implemented against current docs; not live-tested |
+| ComfyUI on your GPU (Z-Image Turbo, Qwen-Image-Edit 2511) | Implemented against the official ComfyUI templates; tested against a simulated ComfyUI server; **not yet run on a real GPU** |
 | Free video generation | Unavailable — no integrated provider offers it |
 
-## Next: self-hosted GPU generation (planned — not built yet)
+## Next: self-hosted GPU generation (step 1 built)
 Decided Nov 2026. Goal: generate images and video with **open, commercially licensed models on a rented GPU**, paying only for GPU time instead of per-image/per-second API fees. Output is for a **monetized YouTube channel**, so licences must allow commercial use. Budget: **$50/month max** for now (may grow with channel revenue).
 
 - [ ] **Setup (with the user, once):** RunPod account with prepaid credit ($10–20 at a time, auto-reload off), ~100 GB network volume for models, ComfyUI pod, model download script
-- [ ] **"Your GPU" provider (ComfyUI adapter):** text-to-image, reference-image editing for consistency, image-to-video, text-to-video — plugs into the existing Image/Video Studio, job system and shot takes
+- [x] **"Your GPU" provider (ComfyUI adapter), images:** Z-Image Turbo text-to-image + Qwen-Image-Edit 2511 reference editing, in the existing Image Studio, job system and shot takes
+- [ ] First real session on RunPod: verify workflows, measure speed and cost per image
+- [ ] ComfyUI video: Wan 2.2 image-to-video / text-to-video
 - [ ] **Secured connection** to ComfyUI (it has no built-in auth)
 - [ ] **GPU cost controls in the app:** start/stop pod with hourly price shown, live session cost meter, auto-stop after 15 idle minutes, monthly budget cap that blocks starting the GPU once reached
 - [ ] **Per-character LoRA training** on the rented GPU (most reliable consistency; later phase)
@@ -58,7 +64,7 @@ Decided Nov 2026. Goal: generate images and video with **open, commercially lice
 Planned models (all Apache 2.0 — licences to be re-verified before download):
 | Job | Model |
 |---|---|
-| Images | Qwen-Image |
+| Images | Z-Image Turbo (built), Qwen-Image |
 | Consistency edits with multiple reference images | Qwen-Image-Edit |
 | Image-to-video / text-to-video | Wan 2.2 |
 | Free quick drafts | FLUX.1 [schnell] / Cloudflare (already integrated) |

@@ -4,6 +4,7 @@ import { aiApi, prepareImage, type GenerationView } from "@/lib/client/ai";
 import { buildContinuityBundle, continuityPrompt, type ReferenceImage } from "@/lib/continuity";
 import { assetById, fileUrl, sceneLabel, shotNumber, timeAgo } from "@/lib/projectModel";
 import type { ImageProviderInfo, ReferenceInput, VideoProviderInfo } from "@/lib/ai/types";
+import { billingLabel } from "@/lib/ai/types";
 import type { Asset, ID } from "@/lib/types";
 import { ContinuityPicker, type ContinuityValue } from "./ContinuityPicker";
 import { AssetPreview, useStudio } from "./studio";
@@ -48,7 +49,7 @@ export function GenerationStudio({ mode }: { mode: Mode }) {
   // Default provider: first configured, preferring the free allocation.
   useEffect(() => {
     if (providerId && providers.some(p => p.id === providerId)) return;
-    const pick = providers.find(p => p.configured && p.billing === "free-allocation") ?? providers.find(p => p.configured) ?? providers[0];
+    const pick = providers.find(p => p.configured && p.billing === "self-hosted") ?? providers.find(p => p.configured && p.billing === "free-allocation") ?? providers.find(p => p.configured) ?? providers[0];
     if (pick) setProviderId(pick.id);
   }, [providers, providerId]);
 
@@ -176,7 +177,7 @@ export function GenerationStudio({ mode }: { mode: Mode }) {
           <h3>{isImage ? "Image generation" : "Video generation"}</h3>
           <p>{isImage ? "Generate frames from a shot with its character and location references." : "Animate a frame (image-to-video) or generate from text."}</p>
         </div>
-        {provider && <span className={`connection-pill${provider.configured ? "" : " warn"}`}>{provider.configured ? `${provider.vendor} · ${provider.billing === "paid" ? "paid" : "free allocation"}` : "not configured"}</span>}
+        {provider && <span className={`connection-pill${provider.configured ? "" : " warn"}`}>{provider.configured ? `${provider.vendor} · ${billingLabel(provider.billing)}` : "not configured"}</span>}
       </div>
 
       {ai.providersError && <p className="error-text">{ai.providersError}</p>}
@@ -185,7 +186,7 @@ export function GenerationStudio({ mode }: { mode: Mode }) {
         <div className="panel">
           <label>PROVIDER / MODEL
             <select className="field" value={providerId} onChange={e => { setProviderId(e.target.value); setSelectedRefs(null); }}>
-              {providers.map(p => <option key={p.id} value={p.id}>{p.label} — {p.billing === "paid" ? "paid" : "free allocation"}{p.configured ? "" : " (not configured)"}</option>)}
+              {providers.map(p => <option key={p.id} value={p.id}>{p.label} — {billingLabel(p.billing)}{p.configured ? "" : " (not configured)"}</option>)}
             </select>
           </label>
           {provider && (

@@ -12,6 +12,41 @@ Research for this guide was done in November 2026, and provider offerings change
 
 That gives you working chat, the script assistant, and reference-conditioned image generation, all within free allocations. **There is no free video option** (see below).
 
+## Your own GPU: ComfyUI (unlimited images, pay per hour)
+
+Wonderboy can send image jobs to **ComfyUI running on a GPU you rent** (e.g. RunPod). There is no per-image fee: you pay the GPU host by the hour while the pod runs. **Wonderboy does not start or stop the pod yet** (that is step 2 of the roadmap), so stop it on RunPod when you're done.
+
+| Provider (id) | Model | Licence | What it does |
+|---|---|---|---|
+| **Z-Image Turbo** (`comfyui-z-image`) | Z-Image-Turbo 6B, 8 steps | Apache-2.0 (official model card) | Fast, photorealistic **text-to-image**. 1K (≈1 MP) or 2K (16:9 = 1920×1088). Text-only: references are not used |
+| **Qwen-Image-Edit 2511** (`comfyui-qwen-edit`) | Qwen-Image-Edit-2511 20B (fp8mixed) + Lightning 4-step LoRA | Apache-2.0 (model); LoRA licence not yet verified | **Reference-conditioned**: up to 3 pictures (source image, then character/location references). 4–8 steps = fast mode with the LoRA (CFG 1); 9–40 steps = full model (CFG applies, slower) |
+
+### Setup (once)
+1. **RunPod:** create an account and add prepaid credit ($10 is enough to start) with **auto-reload off**. That is your hard spending limit.
+2. **Network volume** (≈ 60–80 GB) in the same region as the GPU you want, so models are downloaded once (≈ $0.07/GB/month, about $4–6/month).
+3. **Deploy a pod** on an RTX 4090 or 5090 (24–32 GB VRAM) with a **ComfyUI template** and the network volume attached. When it's running, open *Connect* and copy the HTTP address for port 8188: `https://<pod-id>-8188.proxy.runpod.net`.
+4. **Wonderboy → Settings → ComfyUI GPU:** paste the address, then **Save address**. Wonderboy tests the connection and lists missing model files with ready-to-copy `wget` commands.
+5. **Download the models:** open the pod's web terminal, `cd` into the ComfyUI folder (on the network volume), paste the commands, and wait. Then refresh ComfyUI and press **Test connection** again.
+
+| File | Folder | Size | Needed for |
+|---|---|---|---|
+| `z_image_turbo_bf16.safetensors` | `diffusion_models` | 11.5 GB | Z-Image |
+| `qwen_3_4b.safetensors` | `text_encoders` | 7.5 GB | Z-Image |
+| `ae.safetensors` | `vae` | 0.3 GB | Z-Image |
+| `qwen_image_edit_2511_fp8mixed.safetensors` | `diffusion_models` | ≈ 20 GB | Qwen-Edit |
+| `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `text_encoders` | 8.7 GB | Qwen-Edit |
+| `qwen_image_vae.safetensors` | `vae` | 0.24 GB | Qwen-Edit |
+| `Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors` | `loras` | 0.8 GB | Qwen-Edit fast mode |
+
+### How it works
+- Workflows follow ComfyUI's official templates (Z-Image Turbo: `lumina2` text encoder, AuraFlow shift 3, 8 steps, CFG 1, `res_multistep`; Qwen-Image-Edit-2511: `TextEncodeQwenImageEditPlus`, CFGNorm, `index_timestep_zero` reference method, euler/simple).
+- Before each job Wonderboy reads `/object_info` from your ComfyUI: it checks the model files exist (clear error if not) and fills defaults for any inputs newer ComfyUI versions add.
+- References are uploaded with `/upload/image`, the job is queued with `/prompt`, progress comes from `/queue` + `/history`, and the image is downloaded from `/view`.
+- Tested against a simulated ComfyUI server (upload, queue, progress, download, missing models, unreachable pod). **Not yet run on a real GPU**; the first real session is the real test, and speeds in the UI are estimates until then.
+
+### Security
+ComfyUI has **no login**. RunPod's proxy address is hard to guess but public: anyone who has it can use your GPU while the pod runs. Don't share it, stop the pod when idle, and if you put ComfyUI behind an authenticating proxy, add its header in Settings (stored only in `data/settings.json` on your computer and never sent to the browser).
+
 ## Voice (text-to-speech)
 
 | Engine (id) | Languages | Cost | Licence | Status |
@@ -60,9 +95,9 @@ That gives you working chat, the script assistant, and reference-conditioned ima
 - Cloudflare's free plan cannot overspend: requests fail with 429 once the daily allocation is used (resets 00:00 UTC). On Workers **Paid**, usage above the allocation is billed.
 - Failures show the provider's own message (401 bad key, 402 billing, 404 model retired, 429 quota). Wonderboy does not retry paid jobs automatically. Use **Retry with these settings**.
 
-## Planned: self-hosted GPU (main direction)
+## Self-hosted GPU (main direction)
 
-Paying per image or per second through APIs is expensive at YouTube volumes. The chosen direction is to **rent a GPU by the hour and run open models with ComfyUI**, with Wonderboy talking to it as a new provider. Status: **planned, not built** (see docs/PROGRESS.md).
+Paying per image or per second through APIs is expensive at YouTube volumes. The chosen direction is to **rent a GPU by the hour and run open models with ComfyUI**, with Wonderboy talking to it as a provider. Status: **step 1 built** (ComfyUI image providers above). Video on the GPU and in-app start/stop/cost controls are next (see docs/PROGRESS.md).
 
 | | Paid API (integrated) | Rented GPU + open models (planned) |
 |---|---|---|

@@ -19,7 +19,7 @@ The AI engine (all server-side, provider-independent):
 
 See `docs/PROVIDERS.md` for setup, costs and per-integration status.
 
-**Product direction (decided Nov 2026):** the output is for a **monetized YouTube channel** on a **$50/month budget**. Prefer free tiers. For real generation, the plan is to **rent a GPU (RunPod) and run open, commercially licensed models via ComfyUI** (Qwen-Image, Qwen-Image-Edit, Wan 2.2), paying only for GPU time. This is **planned, not built**; see the roadmap in `docs/PROGRESS.md`. Rules that follow from it:
+**Product direction (decided Nov 2026):** the output is for a **monetized YouTube channel** on a **$50/month budget**. Prefer free tiers. For real generation, the plan is to **rent a GPU (RunPod) and run open, commercially licensed models via ComfyUI** (Z-Image Turbo, Qwen-Image-Edit, Wan 2.2), paying only for GPU time. **Step 1 is built:** ComfyUI image providers that talk to a pod the user starts themselves (address pasted in Settings). Video on the GPU and in-app start/stop/cost controls are not built yet; see the roadmap in `docs/PROGRESS.md`. Rules that follow from it:
 - Only use models whose licences allow commercial use for production features. Flag anything else.
 - Never start a paid GPU or paid job without an explicit user action, with the price shown. GPU features must include idle auto-stop and respect the budget cap.
 - Paid per-call APIs (Gemini image/Omni, fal.ai) stay as optional fallbacks, not the default path.
@@ -73,6 +73,7 @@ src/
       projects/[id]/generations/     GET history (+live progress) · POST start job
       projects/[id]/conversations/   GET · POST; [cid] PATCH/DELETE; [cid]/messages POST (chat turn)
       projects/[id]/assist/          POST script-assistant task → proposals
+      comfyui/route.ts               GET status (?check=1 contacts ComfyUI) · PUT {url, authHeader?, clearAuth?}
       providers/route.ts             GET provider registry (status + capabilities, no secrets)
   components/
     studio.tsx                       StudioContext/useStudio, TABS, shared UI (fields, Modal, AssetPreview, ReferenceImages…)
@@ -97,6 +98,8 @@ src/
     server/ai/http.ts                ProviderError, HTTP error explanations, postJsonLong (node:https, long timeout)
     server/ai/llm.ts                 Gemini generateContent + OpenAI-compatible; chat()
     server/ai/image.ts               Cloudflare FLUX.2 klein/dev, FLUX.1 schnell, Gemini image (Interactions API)
+    server/ai/comfyui.ts             ComfyUI on your GPU: Z-Image Turbo + Qwen-Image-Edit workflows, /object_info model check, upload/queue/history/view, status check
+    server/settings.ts               data/settings.json (ComfyUI address + optional auth header), sync cached read
     server/ai/video.ts               Gemini Omni Flash (Interactions API), fal.ai queue (Kling/Wan)
     server/ai/audio.ts               TTS: Kokoro (local, lazy-loaded, 1 job at a time, idle unload) + Gemini TTS; WAV utils
     server/generations.ts            Job validation (caps, paid approval), background runner, records
@@ -112,6 +115,7 @@ data/projects/<id>/project.json.bak      previous version
 data/projects/<id>/files/<assetId>.<ext> uploaded and generated files
 data/projects/<id>/generations.json      generation job records (server-owned)
 data/projects/<id>/conversations.json    AI conversations (server-owned)
+data/settings.json                       server settings edited in the UI (ComfyUI address/auth; never sent to the browser)
 data/models/                             Kokoro model cache (downloaded on first TTS use)
 ```
 
@@ -128,12 +132,13 @@ data/models/                             Kokoro model cache (downloaded on first
 
 ## AI architecture
 
-- **Providers** are server-side adapters with honest capability descriptors (`ImageCaps`/`VideoCaps` in `src/lib/ai/types.ts`): max reference images (0 = text-only), image-to-image / image-to-video, aspect ratios, sizes, durations, resolutions, `referenceMaxSide`, and cost per second. `GET /api/providers` exposes `configured`, `billing` (`free-allocation`/`paid`), `costNote`, `requirements`, `setup` and `conditioning`, all derived from env. The UI is driven entirely by this, so adding a provider requires no UI changes.
+- **Providers** are server-side adapters with honest capability descriptors (`ImageCaps`/`VideoCaps` in `src/lib/ai/types.ts`): max reference images (0 = text-only), image-to-image / image-to-video, aspect ratios, sizes, durations, resolutions, `referenceMaxSide`, and cost per second. `GET /api/providers` exposes `configured`, `billing` (`free-allocation`/`paid`/`self-hosted`; only `paid` needs per-job approval), `costNote`, `requirements`, `setup` and `conditioning`, derived from env (and `data/settings.json` for ComfyUI). The UI is driven entirely by this, so adding a provider requires no UI changes.
 - **References:** the browser picks reference images from the shot's continuity bundle (`buildContinuityBundle`, ordered primary identity → wardrobe → location angle → location → shot refs). It downscales them with a canvas (`prepareImage`, ≤511px for Cloudflare FLUX.2) and sends them as base64 JPEG. Adapters label each image in the prompt (FLUX.2: "image N = …", Gemini: a text part before each image).
 - **Jobs:** `POST /generations` validates against caps, requires `approvedPaid: true` for paid providers, stores a `running` record and runs in the background (max 3 concurrent per server). The client polls every 3 s while jobs run. Jobs interrupted by a server restart are marked failed, with advice to check the provider dashboard. Paid jobs are never retried automatically.
 - **Audio** jobs use the same pipeline (`type: "audio"`, `audioSettings: {voice, speed?, style?}`) and produce WAV assets.
   - Kokoro gotcha: `kokoro-js` 1.2.x `stream(string)` never finishes, because it doesn't close its splitter. Always pass a closed `TextSplitterStream`.
   - fp32 is the default dtype because it was ~2× faster than q8 on the dev CPU (no VNNI).
+- **ComfyUI:** API-format graphs built in `comfyui.ts`. Before each job it fetches `/object_info/<Class>` to check model files exist and to fill defaults for required inputs newer ComfyUI versions add (`fillDefaults`). Progress comes from polling `/queue` + `/history`. It never starts/stops pods. Verify node names against the official templates in Comfy-Org/workflow_templates when changing workflows.
 - **Long calls** (Gemini image/video) use `postJsonLong` (`node:https`, up to 20 min), because undici `fetch` has a 5-minute header timeout. fal.ai uses its queue (submit → poll `status_url` → `response_url`). Gemini Omni uses `delivery: "uri"`, then polls Files API state and downloads.
 - **Text:** `chat()` uses `LLM_PROVIDER`, or else the first configured provider (Gemini, then OpenAI-compatible). The companion sends the last 24 messages plus a live project context (`projectContext`, IDs included, ~40k chars max). The client calls `ws.saveNow()` before chat and assist so the server reads current data.
 - **Proposals:** the companion appends a ` ```wonderboy {"proposals":[…]} ``` ` block, and the assistant returns JSON. Both go through `normalizeProposal` (IDs validated against the project). `applyProposal` never deletes. A script replacement needs `replace: true`, which the UI sends only after `confirm()`. Scene updates and logline replacement also ask for confirmation.
@@ -176,7 +181,8 @@ No auth (single local user). Environment variables are documented in `.env.examp
 ## Limitations & unfinished work
 
 - **Provider adapters are untested against live accounts.** No keys were configured during development, so each was written against current docs and the first real call is the real test. Cloudflare FLUX.2 form fields come from Cloudflare's changelog examples, because the official schema doesn't list them.
-- **No free video generation exists** among the integrated providers. All video is paid. The self-hosted GPU provider meant to make it cheap isn't built yet.
+- **No free video generation exists** among the integrated providers. All video is paid. ComfyUI video (Wan 2.2) on the rented GPU isn't built yet.
+- **ComfyUI providers are untested on a real GPU** (only against a simulated server). Wonderboy can't start/stop the pod or meter its cost yet, so the user must stop it on RunPod. ComfyUI has no auth; the RunPod proxy URL is the only protection.
 - **Consistency is improved, not guaranteed.** There's no LoRA or identity training.
 - Job execution is in-process. A server restart interrupts running jobs (they're marked failed), and there's no cancel button.
 - Chat isn't streamed. The companion only sees the saved project (the client saves first) and the last 24 messages.
