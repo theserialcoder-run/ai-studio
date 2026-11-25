@@ -45,7 +45,7 @@ async function exists(p: string) {
   try { await fs.access(p); return true; } catch { return false; }
 }
 
-async function writeAtomic(file: string, data: string) {
+export async function writeAtomic(file: string, data: string) {
   const tmp = `${file}.${randomUUID()}.tmp`;
   await fs.writeFile(tmp, data, "utf8");
   if (await exists(file)) await fs.copyFile(file, `${file}.bak`);

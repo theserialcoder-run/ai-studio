@@ -522,6 +522,10 @@ textarea.field { resize: vertical; line-height: var(--lh-body); }
    Settings
    ========================================================================== */
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.comfy-panel { margin: 14px 0; }
+.comfy-check { margin-top: 12px; display: grid; gap: 10px; }
+.comfy-workflow ul { margin: 4px 0 0; padding-left: 18px; font-size: var(--fs-sm); line-height: 1.6; overflow-wrap: anywhere; }
+.code-block { margin: 0; padding: 10px 12px; background: #10100e; border: 1px solid var(--line); border-radius: 6px; font-family: var(--font-mono); font-size: var(--fs-xs); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
 .provider-row { display: flex; align-items: center; gap: 12px; padding: 15px 0; border-bottom: 1px solid var(--line); }
 .provider-row > div { flex: 1; min-width: 0; }
 .provider-row b,
