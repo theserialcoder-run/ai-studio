@@ -47,6 +47,12 @@ Wonderboy can send image jobs to **ComfyUI running on a GPU you rent** (e.g. Run
 ### Security
 ComfyUI has **no login**. RunPod's proxy address is hard to guess but public: anyone who has it can use your GPU while the pod runs. Don't share it, stop the pod when idle, and if you put ComfyUI behind an authenticating proxy, add its header in Settings (stored only in `data/settings.json` on your computer and never sent to the browser).
 
+## Story Cuts (narrated stories over footage)
+- **ffmpeg** (free, local) does scene detection and rendering: `sudo apt install ffmpeg`.
+- **Scene descriptions and story writing** use the text AI (Gemini free tier via `GEMINI_API_KEY`, or an OpenAI-compatible model that accepts images). Keyframes (small JPEGs) are sent to the provider; on Gemini's free tier, Google may use inputs to improve its products. A 100-scene film is about 10 description requests plus 1 story request.
+- **Voice:** any configured voice engine (Kokoro by default: local and free).
+- **Footage:** use footage you may monetize (Pexels/Pixabay stock, public-domain films). Copyrighted movie clips are usually claimed by YouTube's Content ID.
+
 ## Voice (text-to-speech)
 
 | Engine (id) | Languages | Cost | Licence | Status |

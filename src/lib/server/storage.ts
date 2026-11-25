@@ -179,10 +179,11 @@ export function dataRoot() {
 }
 
 /* ------------------------------------------------------- side documents */
+type SideFile = "generations" | "conversations" | "storycuts";
 // Small JSON files next to project.json that the server owns (the client never
 // PUTs them), so they don't conflict with the client's revision-checked saves.
 
-export async function readSideFile<T>(projectId: string, name: "generations" | "conversations", fallback: T): Promise<T> {
+export async function readSideFile<T>(projectId: string, name: SideFile, fallback: T): Promise<T> {
   if (!(await exists(docPath(projectId)))) throw new StorageError("Project not found", 404);
   try {
     return JSON.parse(await fs.readFile(path.join(projectDir(projectId), `${name}.json`), "utf8")) as T;
@@ -192,13 +193,35 @@ export async function readSideFile<T>(projectId: string, name: "generations" | "
 }
 
 /** Read-modify-write a side file under the project lock. */
-export async function updateSideFile<T>(projectId: string, name: "generations" | "conversations", fallback: T, fn: (current: T) => T | Promise<T>): Promise<T> {
+export async function updateSideFile<T>(projectId: string, name: SideFile, fallback: T, fn: (current: T) => T | Promise<T>): Promise<T> {
   return withLock(`${projectId}:${name}`, async () => {
     const current = await readSideFile(projectId, name, fallback);
     const next = await fn(current);
     await writeAtomic(path.join(projectDir(projectId), `${name}.json`), JSON.stringify(next, null, 2));
     return next;
   });
+}
+
+/** Scratch folder for derived files (keyframes, voice cache, render temp). Removed with the project. */
+export function projectCacheDir(projectId: string): string {
+  if (!isValidId(projectId)) throw new StorageError("Invalid project id", 400);
+  return path.join(projectDir(projectId), "cache");
+}
+
+/** Moves a finished media file (e.g. a render) into the project's files folder without loading it into memory. */
+export async function saveGeneratedFileFromPath(projectId: string, sourcePath: string, mimeType: string, displayName: string): Promise<Asset> {
+  if (!(await exists(docPath(projectId)))) throw new StorageError("The project was deleted before the job finished.", 404);
+  const id = randomUUID();
+  const ext = EXT_BY_MIME[mimeType] ?? "bin";
+  const fileName = `${id}.${ext}`;
+  await fs.mkdir(filesDir(projectId), { recursive: true });
+  const dest = path.join(filesDir(projectId), fileName);
+  await fs.rename(sourcePath, dest).catch(async () => { await fs.copyFile(sourcePath, dest); await fs.rm(sourcePath, { force: true }); });
+  const { size } = await fs.stat(dest);
+  return {
+    id, name: `${displayName}.${ext}`, kind: assetKindFromMime(mimeType), mimeType, size, fileName,
+    tags: ["generated"], notes: "", createdAt: nowIso(),
+  };
 }
 
 /** Saves generated media into the project's files folder and returns its asset record. */

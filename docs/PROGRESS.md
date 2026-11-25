@@ -31,6 +31,8 @@ A private AI filmmaking workspace combining an AI creative companion, scriptwrit
 - [x] **Free local TTS:** Kokoro-82M on the CPU (English, unlimited, Apache-2.0), tested end to end
 - [x] Hindi TTS via Gemini 3.8 Flash TTS (free tier), with automatic Hindi detection in the UI
 
+- [x] **Story Cuts:** narrated stories over existing footage (free stock clips, public-domain films). ffmpeg scene detection (range + sensitivity, short scenes merged, long ones split, keyframes) → AI scene descriptions from keyframes (Gemini vision, batched, partial results kept) → AI story with per-scene word budgets in 7 styles + custom direction (editable, reorder/skip scenes) → Kokoro voiceover (cached per line) + ffmpeg render to 1080p30 MP4 with film audio ducked under the voice; saved to the asset library
+- [x] **Story Cuts script mode ("I have a script"):** paste a narration script → AI suggests a cast (script character = recurring person in the footage, editable) → AI splits the script into lines and picks up to 3 matching scenes per line (no scene used twice as first pick) → swap via suggestions or a scene picker, edit/reorder/add lines → render follows the voice (each line's scene trimmed or run on). Using one film keeps characters consistent
 - [x] **Your GPU (ComfyUI) image providers:** Z-Image Turbo (fast text-to-image, up to 1920×1088) and Qwen-Image-Edit 2511 (up to 3 reference/source pictures, fast Lightning mode or full steps). No per-image cost
 - [x] **Settings → ComfyUI GPU:** paste the pod address (saved in `data/settings.json`, no restart), optional auth header, connection test showing GPU, VRAM, ComfyUI version and missing model files with copyable download commands
 
@@ -47,6 +49,7 @@ A private AI filmmaking workspace combining an AI creative companion, scriptwrit
 | Kokoro local TTS (English) | **Working** — verified end to end (12.9 s WAV in 44 s incl. model load on an i5-7200U, ~1 GB peak RAM) |
 | Gemini TTS (Hindi + multilingual, free tier) | Implemented against current docs; not live-tested |
 | ComfyUI on your GPU (Z-Image Turbo, Qwen-Image-Edit 2511) | Implemented against the official ComfyUI templates; tested against a simulated ComfyUI server; **not yet run on a real GPU** |
+| Story Cuts (ffmpeg + Gemini vision + Kokoro), story and script modes | Detect, render (both modes, silent sources, voice cache) verified end to end on synthetic clips; describe/cast/match/story verified against a mock OpenAI-compatible model; **Gemini not live-tested** |
 | Free video generation | Unavailable — no integrated provider offers it |
 
 ## Next: self-hosted GPU generation (step 1 built)

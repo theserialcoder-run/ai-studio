@@ -7,7 +7,7 @@ import type { AiState } from "@/lib/client/useAi";
 import type { Asset, AssetKind, ID, Project } from "@/lib/types";
 
 export const TABS = [
-  "Overview", "Projects", "AI Companion", "Script", "Shots", "Characters", "Locations", "Assets", "Image Studio", "Video Studio", "Voice Studio", "Settings",
+  "Overview", "Projects", "AI Companion", "Script", "Shots", "Characters", "Locations", "Assets", "Image Studio", "Video Studio", "Voice Studio", "Story Cuts", "Settings",
 ] as const;
 export type Tab = (typeof TABS)[number];
 

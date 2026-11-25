@@ -1,6 +1,7 @@
 // Browser-side helpers for the AI routes.
 import { fileUrl } from "../projectModel";
 import type { Proposal } from "../proposals";
+import type { StoryDraft, StoryJob, StoryJobView } from "../storyCut";
 import type { Asset, ID } from "../types";
 import type { ComfyStatus, Conversation, GenerationRecord, GenerationRequest, ProvidersResponse, ReferenceInput } from "../ai/types";
 
@@ -21,6 +22,15 @@ const post = (body: unknown, method = "POST"): RequestInit => ({ method, headers
 
 export const aiApi = {
   providers: () => call<ProvidersResponse>("/api/providers"),
+  storyJobs: (pid: ID) => call<{ jobs: StoryJobView[]; tools: { ok: boolean; error?: string } }>(`/api/projects/${pid}/storycuts/jobs`),
+  startStoryJob: (pid: ID, body: { kind: StoryJob["kind"]; cutId: ID; overwrite?: boolean; sensitivity?: number }) =>
+    call<{ job: StoryJob }>(`/api/projects/${pid}/storycuts/jobs`, post(body)).then(d => d.job),
+  writeStory: (pid: ID, body: { cutId: ID; style: string; instructions: string }) =>
+    call<StoryDraft & { provider: string }>(`/api/projects/${pid}/storycuts/story`, post(body)),
+  suggestCast: (pid: ID, cutId: ID) =>
+    call<{ cast: { name: string; look: string }[]; provider: string }>(`/api/projects/${pid}/storycuts/script`, post({ cutId, action: "cast" })),
+  matchScript: (pid: ID, cutId: ID) =>
+    call<{ lines: { id: ID; text: string; sceneId: ID | null; options: ID[] }[]; notes: string; provider: string }>(`/api/projects/${pid}/storycuts/script`, post({ cutId, action: "match" })),
   comfyStatus: (check: boolean) => call<ComfyStatus>(`/api/comfyui${check ? "?check=1" : ""}`),
   saveComfy: (body: { url: string; authHeader?: string; clearAuth?: boolean }) => call<ComfyStatus>("/api/comfyui", post(body, "PUT")),
   generations: (pid: ID) => call<{ generations: GenerationView[] }>(`/api/projects/${pid}/generations`).then(d => d.generations),
