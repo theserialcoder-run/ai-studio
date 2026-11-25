@@ -1,11 +1,18 @@
 # Architecture
 
-- `src/app`: Next.js App Router pages and API routes.
-- `src/app/page.tsx`: first-pass workspace UI and local project state.
+See CLAUDE.md for the full, current description.
+
+- `src/app/page.tsx`: app shell and view routing; views live in `src/components/`.
+- `src/lib/types.ts`, `src/lib/projectModel.ts`: domain model and pure helpers (shared by client and server).
+- `src/lib/server/storage.ts` + `src/app/api/projects/**`: file-system persistence (`data/projects/<id>/project.json` + `files/`).
+- `src/lib/client/useWorkspace.ts`: client state, debounced revision-checked saves, uploads.
+- `src/lib/continuity.ts`: builds the continuity bundle sent to generation routes.
 - `src/app/api/chat`: optional Gemini server-side chat integration.
 - `src/app/api/generate/image` and `video`: safe placeholders for provider adapters.
-- `.env.local`: secrets; never commit it.
-- `docs/PROGRESS.md`: source of truth for implementation progress.
+- `.env.local`: secrets; never commit it. `data/`: user data; never commit it.
+
+## Current continuity implementation
+Characters store identity fields, identity reference images (one primary) and wardrobe/appearance variations with their own images. Locations store fixed details, master references and named camera angles with their own images. Shots link characters (+ variation), a location (+ angle) and extra reference files. `buildContinuityBundle()` turns a shot into a structured payload with reference image URLs. Nothing is generated yet, and consistency is not guaranteed until reference-conditioned generation is implemented.
 
 ## Continuity design
 Each project owns a canonical reference library. A character reference should eventually include:

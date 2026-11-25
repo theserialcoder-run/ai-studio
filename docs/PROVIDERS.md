@@ -18,7 +18,7 @@ Choose a provider/model after checking:
 - Does it permit commercial use under its license?
 - What are resolution, queue, timeout and output URL rules?
 
-Then implement the request in `src/app/api/generate/image/route.ts`. Keep API keys server-side. Normalize results to `{ status, message, jobId?, outputUrl? }`.
+Then implement the request in `src/app/api/generate/image/route.ts`. The route already receives `{ prompt, userPrompt, continuity }`, where `continuity` is a `ContinuityBundle` (`src/lib/continuity.ts`) with character/location records and reference image URLs (`/api/projects/<id>/files/<assetId>`; read the files server-side from `data/projects/<id>/files/`). Keep API keys server-side. Normalize results to `{ status, message, jobId?, outputUrl? }`.
 
 ## Video generation
 Follow the same process in `src/app/api/generate/video/route.ts`. Prefer asynchronous jobs:
