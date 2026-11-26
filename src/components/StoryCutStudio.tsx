@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { assetById, fileUrl, makeStoryCut, nowIso } from "@/lib/projectModel";
 import { aiApi } from "@/lib/client/ai";
-import { useStoryCuts } from "@/lib/client/useStoryCuts";
+import { dropUnusedStock, useStoryCuts } from "@/lib/client/useStoryCuts";
 import { STORY_STYLES, countWords, formatTime, segmentLength, styleById, wordBudget, type StoryJobView } from "@/lib/storyCut";
 import { newId } from "@/lib/projectModel";
 import type { ID, StoryCut, StoryCutLine, StoryCutSegment } from "@/lib/types";
@@ -15,7 +15,7 @@ const SENSITIVITY = [
   { value: 0.3, label: "Normal" },
   { value: 0.45, label: "More scenes" },
 ];
-const KIND_LABEL: Record<StoryJobView["kind"], string> = { detect: "Scene detection", describe: "Scene descriptions", render: "Render", auto: "Find clips for my script" };
+const KIND_LABEL: Record<StoryJobView["kind"], string> = { detect: "Scene detection", describe: "Scene descriptions", render: "Render", auto: "Find clips for my script", stock: "Find stock clips" };
 
 /** "83", "1:23" or "1:02:03" → seconds; "" → null. */
 function parseTime(text: string): number | null {
@@ -39,6 +39,7 @@ export function StoryCutStudio() {
   const [addId, setAddId] = useState("");
   const [pickLineId, setPickLineId] = useState<ID | null>(null);
   const [rescan, setRescan] = useState(false);
+  const [lineQuery, setLineQuery] = useState<Record<ID, string>>({});
 
   const cut = project.storyCuts.find(c => c.id === selectedId) ?? project.storyCuts[0] ?? null;
   const audioProviders = ai.providers?.audio ?? [];
@@ -159,6 +160,58 @@ export function StoryCutStudio() {
     }, "Reordered script lines");
   }
 
+  function findStock() {
+    if (!cut) return;
+    if (cut.lines.length && !confirm("Find stock clips again? Lines whose text and search are unchanged keep their clip; the rest are searched again.")) return;
+    void start("stock");
+  }
+
+  /** Downloads another found clip for a line and puts it on the timeline. */
+  async function chooseStock(lineId: ID, optionId: string) {
+    if (!cut) return;
+    setBusy(`line:${lineId}`);
+    try {
+      await ws.saveNow();
+      const r = await aiApi.stockSwap(project.id, cut.id, lineId, optionId);
+      ws.mutate(d => {
+        const c = d.storyCuts.find(x => x.id === cut.id);
+        const l = c?.lines.find(x => x.id === lineId);
+        if (!c || !l) return;
+        if (!d.assets.some(a => a.id === r.asset.id)) d.assets.push(r.asset);
+        c.segments.push(r.segment);
+        const old = l.sceneId;
+        l.sceneId = r.segment.id;
+        // Drop the replaced clip if no other line uses it.
+        if (old && !c.lines.some(x => x.sceneId === old)) {
+          const seg = c.segments.find(x => x.id === old);
+          c.segments = c.segments.filter(x => x.id !== old);
+          if (seg) dropUnusedStock(d, [seg.assetId]);
+        }
+        c.updatedAt = nowIso();
+      }, "Swapped a stock clip");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function searchLine(lineId: ID, kind: "video" | "photo") {
+    if (!cut) return;
+    const query = (lineQuery[lineId] ?? cut.lines.find(l => l.id === lineId)?.query ?? "").trim();
+    if (!query) { notify("Type what you want to see, e.g. “woman laughing in the rain”."); return; }
+    setBusy(`line:${lineId}`);
+    try {
+      await ws.saveNow();
+      const r = await aiApi.stockSearch(project.id, cut.id, lineId, query, kind);
+      editLine(lineId, l => { l.stock = r.options; l.query = r.query; }, "Searched stock clips for a line");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
   function moveSegment(index: number, dir: -1 | 1) {
     editCut(c => {
       const j = index + dir;
@@ -259,12 +312,82 @@ export function StoryCutStudio() {
           <div className="row-actions">
             <button className="tiny-button" disabled={i === 0} onClick={() => moveLine(i, -1)} aria-label="Move up">↑</button>
             <button className="tiny-button" disabled={i === c.lines.length - 1} onClick={() => moveLine(i, 1)} aria-label="Move down">↓</button>
-            <button className="tiny-button" onClick={() => editCut(x => { x.lines.splice(i + 1, 0, { id: newId(), text: "", sceneId: null, options: [] }); }, "Added a script line")}>+ Line below</button>
+            <button className="tiny-button" onClick={() => editCut(x => { x.lines.splice(i + 1, 0, { id: newId(), text: "", sceneId: null, options: [], query: "", stock: [] }); }, "Added a script line")}>+ Line below</button>
             <button className="tiny-button danger-text" onClick={() => editCut(x => { x.lines = x.lines.filter(y => y.id !== l.id); }, "Removed a script line")}>Remove</button>
           </div>
         </div>
       </div>
     );
+  }
+
+  /** Which of a line's found clips is on the timeline (matched by its Pexels page link in the asset notes). */
+  function chosenStockId(l: StoryCutLine, c: StoryCut): string | null {
+    const seg = c.segments.find(s => s.id === l.sceneId);
+    const asset = seg ? assetById(project, seg.assetId) : undefined;
+    return asset ? l.stock.find(o => o.pageUrl && asset.notes.includes(o.pageUrl))?.id ?? null : null;
+  }
+
+  function renderStockLine(l: StoryCutLine, i: number, c: StoryCut) {
+    const seg = c.segments.find(s => s.id === l.sceneId);
+    const words = countWords(l.text);
+    const speak = words / (2.4 * c.voice.speed) + 0.5;
+    const len = seg ? segmentLength(seg) : 0;
+    const isPhoto = seg ? assetById(project, seg.assetId)?.kind === "image" : false;
+    const fit = !seg || !words || isPhoto ? "" : speak <= len ? " ok" : speak <= len * 1.5 ? " warn" : " over";
+    const chosen = chosenStockId(l, c);
+    const lineBusy = busy === `line:${l.id}`;
+    return (
+      <div key={l.id} className="scene-cut">
+        <div className="scene-cut-media">
+          {seg && previewId === l.id && !isPhoto
+            ? <video className="scene-cut-video" src={fileUrl(project.id, seg.assetId)} controls autoPlay preload="metadata" />
+            : <button type="button" className="scene-cut-frames" onClick={() => seg && !isPhoto && setPreviewId(l.id)} title={seg ? (isPhoto ? "Photo (gets a slow zoom)" : "Play this clip") : "No clip yet"}>{renderThumb(seg)}</button>}
+          <small className="muted">{seg ? `${isPhoto ? "Photo" : `${len.toFixed(1)} s clip`}${l.query ? ` · “${l.query}”` : ""}` : "No clip yet"}</small>
+          {l.stock.length > 0 && (
+            <div className="alt-row" aria-label="Other clips found">
+              {l.stock.filter(o => o.id !== chosen).slice(0, 3).map(o => (
+                <button key={o.id} type="button" className="alt-thumb" disabled={!!busy} title={`Use this ${o.kind}${o.duration ? ` (${o.duration} s)` : ""} by ${o.author}`}
+                  onClick={() => void chooseStock(l.id, o.id)}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={frameUrl(project.id, o.thumb)} alt="" loading="lazy" />
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="stock-search">
+            <input className="field" aria-label="Search stock clips" value={lineQuery[l.id] ?? l.query} placeholder="Search other clips…"
+              onChange={e => setLineQuery(q => ({ ...q, [l.id]: e.target.value }))}
+              onKeyDown={e => { if (e.key === "Enter") void searchLine(l.id, "video"); }} />
+            <button className="tiny-button" disabled={!!busy} onClick={() => void searchLine(l.id, "video")}>{lineBusy ? "…" : "Videos"}</button>
+            <button className="tiny-button" disabled={!!busy} onClick={() => void searchLine(l.id, "photo")}>Photos</button>
+          </div>
+        </div>
+        <div className="scene-cut-text">
+          <label>
+            <span className="label-row">LINE {i + 1}<span className={`budget${fit}`} title="Speaking time vs. clip length. A long line holds the clip's last frame.">{speak.toFixed(1)} s{seg && !isPhoto ? ` / ${len.toFixed(1)} s clip` : ""}</span></span>
+            <textarea className="field textarea-small" value={l.text} onChange={e => editLine(l.id, x => { x.text = e.target.value; })} />
+          </label>
+          <div className="row-actions">
+            <button className="tiny-button" disabled={i === 0} onClick={() => moveLine(i, -1)} aria-label="Move up">↑</button>
+            <button className="tiny-button" disabled={i === c.lines.length - 1} onClick={() => moveLine(i, 1)} aria-label="Move down">↓</button>
+            <button className="tiny-button" onClick={() => editCut(x => { x.lines.splice(i + 1, 0, { id: newId(), text: "", sceneId: null, options: [], query: "", stock: [] }); }, "Added a script line")}>+ Line below</button>
+            <button className="tiny-button danger-text" onClick={() => editCut(x => { x.lines = x.lines.filter(y => y.id !== l.id); }, "Removed a script line")}>Remove</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /** "Video by X on Pexels: url" for every stock clip on the timeline, for the YouTube description. */
+  function stockCredits(c: StoryCut): string {
+    const used = new Set(c.lines.map(l => l.sceneId).filter(Boolean));
+    const out: string[] = [];
+    for (const seg of c.segments.filter(s => used.has(s.id))) {
+      const a = assetById(project, seg.assetId);
+      const m = a && /^(Video|Photo) by (.+?) on Pexels: (\S+)/.exec(a.notes);
+      if (m) out.push(`${m[1]} by ${m[2]} on Pexels: ${m[3]}`);
+    }
+    return [...new Set(out)].join("\n");
   }
 
   function renderScenePicker(c: StoryCut) {
@@ -328,12 +451,14 @@ export function StoryCutStudio() {
   }
 
   const scriptMode = cut.mode === "script";
+  const stockMode = cut.mode === "stock";
+  const lineMode = scriptMode || stockMode;
   const used = cut.segments.filter(s => !s.skip);
   const linesWithScene = cut.lines.filter(l => l.sceneId && cut.segments.some(s => s.id === l.sceneId));
-  const narrationWords = scriptMode
+  const narrationWords = lineMode
     ? linesWithScene.reduce((n, l) => n + countWords(l.text), 0)
     : used.reduce((n, s) => n + countWords(s.narration), 0);
-  const estVideo = scriptMode
+  const estVideo = lineMode
     ? linesWithScene.reduce((n, l) => {
       const w = countWords(l.text);
       const s = cut.segments.find(x => x.id === l.sceneId)!;
@@ -343,7 +468,7 @@ export function StoryCutStudio() {
       const w = countWords(s.narration);
       return n + Math.max(segmentLength(s), w ? w / (2.4 * cut.voice.speed) + 0.5 : 0);
     }, 0);
-  const renderable = scriptMode ? linesWithScene.length : used.length;
+  const renderable = lineMode ? linesWithScene.length : used.length;
   const estVoice = narrationWords / (2.4 * cut.voice.speed);
   const voiceProvider = audioProviders.find(p => p.id === cut.voice.providerId) ?? audioProviders[0];
   const voiceCaps = voiceProvider?.caps;
@@ -352,6 +477,7 @@ export function StoryCutStudio() {
   const addable = videoAssets.filter(a => !cut.sources.some(s => s.assetId === a.id));
   const style = styleById(cut.style);
   const autoJob = cutJobs.find(j => j.kind === "auto");
+  const stockJob = cutJobs.find(j => j.kind === "stock");
 
   return (
     <div className="content story-cuts">
@@ -370,19 +496,26 @@ export function StoryCutStudio() {
       <div className="panel">
         <span className="field-label">HOW DO YOU WANT TO MAKE THIS VIDEO?</span>
         <div className="chip-select" role="radiogroup" aria-label="How to make the video">
-          <button type="button" className={`chip${scriptMode ? " on" : ""}`} aria-pressed={scriptMode} onClick={() => editCut(c => { c.mode = "script"; }, "Switched a story cut to script mode")}>I have a script: find clips for it</button>
-          <button type="button" className={`chip${!scriptMode ? " on" : ""}`} aria-pressed={!scriptMode} onClick={() => editCut(c => { c.mode = "story"; }, "Switched a story cut to AI story mode")}>Write a story for my footage</button>
+          <button type="button" className={`chip${stockMode ? " on" : ""}`} aria-pressed={stockMode} onClick={() => editCut(c => { c.mode = "stock"; }, "Switched a story cut to stock mode")}>My script + free stock clips (Pexels)</button>
+          <button type="button" className={`chip${scriptMode ? " on" : ""}`} aria-pressed={scriptMode} onClick={() => editCut(c => { c.mode = "script"; }, "Switched a story cut to script mode")}>My script + clips from my film</button>
+          <button type="button" className={`chip${!lineMode ? " on" : ""}`} aria-pressed={!lineMode} onClick={() => editCut(c => { c.mode = "story"; }, "Switched a story cut to AI story mode")}>Write a story for my footage</button>
         </div>
+        <p className="muted small">
+          {stockMode ? "Best when the narrator tells the story and characters don't need to look the same from shot to shot. Clips come from Pexels: free for monetized videos."
+            : scriptMode ? "Best for consistent characters: every clip comes from one film you upload."
+            : "The AI writes a new story where the people in your footage become the characters."}
+        </p>
       </div>
 
-      {scriptMode ? <>
-        {/* Script mode: script → film → one button → clips */}
+      {lineMode ? <>
+        {/* Script / stock mode: script first */}
         <div className="panel">
           <h3 className="step-title"><span className="step-num">1</span> Your script</h3>
           <textarea className="field script-box" aria-label="Your script" value={cut.script} placeholder="Paste the narration your voiceover will read…"
             onChange={e => editCut(c => { c.script = e.target.value; }, "Edited a story cut script")} />
           <small className="muted">{countWords(cut.script)} words · about {formatTime(countWords(cut.script) / (2.4 * cut.voice.speed))} of narration</small>
-          <details className="cast-details" open={cut.cast.length > 0}>
+          {stockMode && <p className="muted small">Put the clips or pictures you want in brackets, e.g. <code>(Clips: man spills coffee on shirt, bus driving away)</code> or <code>(Images: empty wallet)</code>. Movie and TV references are turned into similar generic shots, because stock sites don&apos;t have them.</p>}
+          {scriptMode && <details className="cast-details" open={cut.cast.length > 0}>
             <summary>Cast (optional: the AI suggests it when you find clips)</summary>
             <span className="field-label">CAST <small className="muted">character = how they look in the footage</small></span>
             <div className="stack">
@@ -400,9 +533,41 @@ export function StoryCutStudio() {
               {described > 0 && <button className="button secondary" disabled={!!busy || !cut.script.trim()} onClick={() => void suggestCast()}>{busy === "cast" ? "Casting…" : "Suggest cast again"}</button>}
               <button className="tiny-button" onClick={() => editCut(c => { c.cast.push({ name: "", look: "" }); }, "Edited the cast")}>+ Add character</button>
             </div>
-          </details>
+          </details>}
         </div>
 
+        {stockMode && <>
+          <div className="panel">
+            <h3 className="step-title"><span className="step-num">2</span> Find free stock clips</h3>
+            {tools && !tools.pexels && <p className="warn-text">Needs a free Pexels API key: sign up at pexels.com/api, copy your key, add <code>PEXELS_API_KEY=…</code> to .env.local, then close the Wonderboy window and start it again.</p>}
+            {!ai.providers?.activeLlm && ai.providers && <p className="muted small">No AI key set: lines and searches come straight from your bracket notes. With GEMINI_API_KEY the AI splits the script and writes better searches.</p>}
+            <div className="find-clips">
+              <button className="button primary big" disabled={!cut.script.trim() || !!busy || running.has("stock") || tools?.pexels === false} onClick={findStock}>
+                {running.has("stock") ? "Finding clips…" : cut.lines.length ? "Find stock clips again" : "Find stock clips for my script"}
+              </button>
+              {stockJob?.status === "running" && <p className="small find-progress">{stockJob.progress ?? "Starting…"}</p>}
+              {!running.has("stock") && <small className="muted">Searches Pexels for each line and downloads the best clip (about 5–30 MB each). A 2–3 minute script takes a few minutes. Pexels allows 200 searches an hour.</small>}
+            </div>
+            <p className="muted small">Pexels licence: free for commercial use. Don&apos;t show identifiable people in an offensive way or imply they endorse something. <a href="https://www.pexels.com" target="_blank" rel="noreferrer">Videos provided by Pexels</a>.</p>
+          </div>
+
+          {cut.lines.length > 0 && (
+            <div className="panel">
+              <h3 className="step-title"><span className="step-num">3</span> Clips for your script <small className="muted">{cut.lines.length} lines · {linesWithScene.length} with a clip · about {formatTime(estVideo)} of video</small></h3>
+              <p className="muted small">Click a picture to play the clip. Click a small thumbnail to use that clip instead, or search with your own words.</p>
+              <div className="scene-cut-list">{cut.lines.map((l, i) => renderStockLine(l, i, cut))}</div>
+              {stockCredits(cut) && (
+                <details className="advanced">
+                  <summary>Credits for your video description</summary>
+                  <pre className="code-block">{stockCredits(cut)}</pre>
+                  <button className="tiny-button" onClick={() => { void navigator.clipboard?.writeText(stockCredits(cut)); notify("Credits copied."); }}>Copy credits</button>
+                </details>
+              )}
+            </div>
+          )}
+        </>}
+
+        {scriptMode && <>
         <div className="panel">
           <h3 className="step-title"><span className="step-num">2</span> Your film</h3>
         <p className="muted small">
@@ -476,6 +641,7 @@ export function StoryCutStudio() {
             {renderScenePicker(cut)}
           </div>
         )}
+        </>}
       </> : <>
         {/* Story mode: footage → scenes → AI story */}
         <div className="panel">
@@ -553,7 +719,7 @@ export function StoryCutStudio() {
       </>}
 
       {/* 4. Voice and render */}
-      {(scriptMode ? cut.lines.length > 0 : cut.segments.length > 0) && (
+      {(lineMode ? cut.lines.length > 0 : cut.segments.length > 0) && (
         <div className="panel">
           <h3 className="step-title"><span className="step-num">4</span> Voice &amp; video</h3>
           <div className="form-grid three">

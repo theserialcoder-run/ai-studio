@@ -10,6 +10,7 @@ import type { ID, StoryCut, StoryCutLine, StoryCutSegment } from "../types";
 import { audioProvider, parseWav } from "./ai/audio";
 import { ProviderError } from "./ai/http";
 import { activeLlm, chat } from "./ai/llm";
+import { fetchStock, runStockSearch, searchStock, secondsFor, stockConfigured } from "./stock";
 import { detectScenes, extractFrame, mediaTools, probe, renderParts, type Probe, type RenderPart } from "./media";
 import { findFile, projectCacheDir, readProject, readSideFile, saveGeneratedFileFromPath, StorageError, updateSideFile } from "./storage";
 
@@ -53,9 +54,13 @@ async function loadCut(projectId: string, cutId: string): Promise<StoryCut> {
 /** Validates and queues a background job. */
 export async function startStoryJob(projectId: string, body: { kind?: unknown; cutId?: unknown; overwrite?: unknown; sensitivity?: unknown; rescan?: unknown }): Promise<StoryJob> {
   const kind = body.kind as StoryJobKind;
-  if (!["detect", "describe", "render", "auto"].includes(kind)) bad("kind must be detect, describe, render or auto.");
+  if (!["detect", "describe", "render", "auto", "stock"].includes(kind)) bad("kind must be detect, describe, render, auto or stock.");
   const cut = await loadCut(projectId, String(body.cutId ?? ""));
-  if (kind !== "describe") { const t = await mediaTools(); if (!t.ok) bad(t.error!); }
+  if (kind !== "describe" && kind !== "stock") { const t = await mediaTools(); if (!t.ok) bad(t.error!); }
+  if (kind === "stock") {
+    if (!cut.script.trim()) bad("Paste your script first.");
+    if (!stockConfigured()) bad("Stock clips need a free Pexels API key: create one at pexels.com/api, add PEXELS_API_KEY=… to .env.local, then restart Wonderboy.");
+  }
   if ((kind === "detect" || kind === "auto") && !cut.sources.length) bad("Add your film (or clips) first.");
   if (kind === "auto") {
     if (!cut.script.trim()) bad("Paste your script first.");
@@ -67,7 +72,7 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
   }
   if (kind === "render") {
     const clips = clipsFor(cut);
-    if (!clips.length) bad(cut.mode === "script" ? "No line has a scene yet. Match scenes to your script first." : "There are no scenes to render.");
+    if (!clips.length) bad(cut.mode === "story" ? "There are no scenes to render." : "No line has a clip yet. Find clips for your script first.");
     const p = audioProvider(cut.voice.providerId);
     if (!p) bad("Choose a voice engine.");
     const info = p!.info();
@@ -100,6 +105,10 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
       if (kind === "describe") await runDescribe(projectId, fresh, job, overwrite, progress);
       if (kind === "render") await runRender(projectId, fresh, job, progress);
       if (kind === "auto") await runAuto(projectId, fresh, job, sensitivity, rescan, progress);
+      if (kind === "stock") {
+        const r = await runStockSearch(projectId, fresh, progress, part => patch(projectId, job.id, { lines: part.lines, segments: part.segments, assets: part.assets, notes: part.notes }));
+        await patch(projectId, job.id, { status: "succeeded", lines: r.lines, segments: r.segments, assets: r.assets, notes: r.notes, finishedAt: nowIso() });
+      }
     } catch (e) {
       const message = e instanceof ProviderError || e instanceof StorageError ? e.message : `Unexpected error: ${e instanceof Error ? e.message : String(e)}`;
       if (!(e instanceof ProviderError)) console.error(e);
@@ -352,13 +361,40 @@ async function matchFor(cut: StoryCut): Promise<{ lines: StoryCutLine[]; notes: 
     // First unused suggestion becomes the pick, so a scene isn't shown twice.
     const sceneId = options.find(o => !used.has(o)) ?? null;
     if (sceneId) used.add(sceneId); else unmatched++;
-    return { id: randomUUID(), text: String(l.text).replace(/\s+/g, " ").trim().slice(0, 1000), sceneId, options };
+    return { id: randomUUID(), text: String(l.text).replace(/\s+/g, " ").trim().slice(0, 1000), sceneId, options, query: "", stock: [] };
   });
   if (!lines.length) bad("The AI returned no lines. Try again.", 502);
   return {
     lines, provider: r.provider,
     notes: `${lines.length} lines, ${lines.length - unmatched} with a scene.${unmatched ? ` ${unmatched} need a scene: pick one yourself.` : ""}`,
   };
+}
+
+/* ----------------------------------------------------------- stock mode */
+
+async function loadLine(projectId: string, body: { cutId?: unknown; lineId?: unknown }) {
+  const cut = await loadCut(projectId, String(body.cutId ?? ""));
+  const line = cut.lines.find(l => l.id === body.lineId);
+  if (!line) bad("Line not found. Wait for the project to save and try again.", 404);
+  return { cut, line: line! };
+}
+
+/** Downloads another of a line's found clips. The client links it to the line. */
+export async function stockSwap(projectId: string, body: { cutId?: unknown; lineId?: unknown; optionId?: unknown }) {
+  const { line } = await loadLine(projectId, body);
+  const option = line.stock.find(o => o.id === body.optionId);
+  if (!option) bad("That clip is no longer in this line's results.", 404);
+  return fetchStock(projectId, option!);
+}
+
+/** New search for one line (your own words). Returns options with thumbnails; nothing is downloaded yet. */
+export async function stockSearchLine(projectId: string, body: { cutId?: unknown; lineId?: unknown; query?: unknown; kind?: unknown }) {
+  const { cut, line } = await loadLine(projectId, body);
+  const query = typeof body.query === "string" ? body.query.trim().slice(0, 100) : "";
+  if (!query) bad("Type what you want to see.");
+  const options = await searchStock(projectId, query, body.kind === "photo" ? "photo" : "video", secondsFor(line.text, cut.voice.speed), new Set());
+  if (!options.length) bad(`Nothing found on Pexels for “${query}”. Try simpler words.`, 404);
+  return { options, query };
 }
 
 /* ------------------------------------------------- one-button script flow */
@@ -403,7 +439,7 @@ interface Clip { key: ID; assetId: ID; start: number; sceneLength: number; narra
 
 /** What gets rendered, in order. Story mode: the scenes; script mode: each line over its chosen scene. */
 function clipsFor(cut: StoryCut): Clip[] {
-  if (cut.mode === "script") {
+  if (cut.mode !== "story") {
     const byId = new Map(cut.segments.map(s => [s.id, s]));
     return cut.lines.flatMap(l => {
       const s = l.sceneId ? byId.get(l.sceneId) : undefined;
@@ -441,14 +477,15 @@ async function runRender(projectId: string, cut: StoryCut, job: StoryJob, progre
   }
 
   progress("Preparing the edit…");
-  const probes = new Map<ID, { file: string; info: Probe }>();
+  const probes = new Map<ID, { file: string; still: boolean; info: Probe }>();
   const parts: RenderPart[] = [];
   let extended = 0;
   for (const s of segs) {
     if (!probes.has(s.assetId)) {
       const f = await findFile(projectId, s.assetId);
       if (!f) bad("A footage file is missing from the project.");
-      probes.set(s.assetId, { file: f!.filePath, info: await probe(f!.filePath) });
+      const still = f!.mimeType.startsWith("image/");
+      probes.set(s.assetId, { file: f!.filePath, still, info: still ? { duration: 0, hasAudio: false, width: 0, height: 0 } : await probe(f!.filePath) });
     }
     const src = probes.get(s.assetId)!;
     const v = voiceFor.get(s.key);
@@ -458,7 +495,7 @@ async function runRender(projectId: string, cut: StoryCut, job: StoryJob, progre
       ? (v ? Math.max(MIN_CLIP, v.seconds + VOICE_PAD) : scene)
       : Math.max(scene, v ? v.seconds + VOICE_PAD : 0);
     if (duration > scene + 0.05) extended++;
-    parts.push({ file: src.file, start: s.start, duration, hasAudio: src.info.hasAudio, voiceFile: v?.file ?? null });
+    parts.push({ file: src.file, start: s.start, duration, hasAudio: src.info.hasAudio, voiceFile: v?.file ?? null, still: src.still });
   }
 
   const workDir = path.join(projectCacheDir(projectId), `render-${job.id}`);

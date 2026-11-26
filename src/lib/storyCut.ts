@@ -44,7 +44,7 @@ export function formatTime(seconds: number): string {
 /* ---------------------------------------------------------------- jobs */
 
 /** "auto" = script mode in one go: detect (if needed) → describe → cast (if empty) → match. */
-export type StoryJobKind = "detect" | "describe" | "render" | "auto";
+export type StoryJobKind = "detect" | "describe" | "render" | "auto" | "stock";
 
 export interface StoryJob {
   id: ID;
@@ -64,8 +64,10 @@ export interface StoryJob {
   output?: Asset;
   /** auto: the suggested cast (only when the cut had none). */
   cast?: StoryCastMember[];
-  /** auto: the script timeline. */
+  /** auto / stock: the script timeline. */
   lines?: StoryCutLine[];
+  /** stock: downloaded clips to add to the asset library (their segments are in `segments`). */
+  assets?: Asset[];
 }
 
 export type StoryJobView = StoryJob & { progress: string | null };

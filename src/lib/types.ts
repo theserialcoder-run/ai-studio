@@ -146,12 +146,29 @@ export interface StoryCutSegment {
   skip: boolean;
 }
 
-/** Script mode: one narration line shown over one chosen scene. */
+/** A free stock clip or photo found for a line (stock mode). Only the chosen one is downloaded. */
+export interface StockOption {
+  id: string; // provider id, e.g. "pexels-video-123"
+  kind: "video" | "photo";
+  thumb: string; // keyframe name in the project cache
+  duration: number; // seconds (0 for photos)
+  width: number;
+  height: number;
+  pageUrl: string; // page on the stock site (for credits)
+  author: string;
+  authorUrl: string;
+  fileUrl: string; // download link (video links can expire; re-fetched by id)
+  query: string; // search that found it
+}
+
+/** Script/stock mode: one narration line shown over one chosen scene. */
 export interface StoryCutLine {
   id: ID;
   text: string; // narration
   sceneId: ID | null; // chosen segment (from `segments`)
-  options: ID[]; // AI-suggested alternatives, best first
+  options: ID[]; // script mode: AI-suggested alternative scenes, best first
+  query: string; // stock mode: what to search for
+  stock: StockOption[]; // stock mode: found clips, best first
 }
 
 export interface StoryCastMember {
@@ -162,8 +179,9 @@ export interface StoryCastMember {
 export interface StoryCut {
   id: ID;
   title: string;
-  /** "story": AI writes a story for the scenes in order. "script": the user's script, AI picks a scene per line. */
-  mode: "story" | "script";
+  /** "story": AI writes a story for the scenes. "script": AI picks a scene from the user's film per line.
+   *  "stock": AI finds free stock clips (Pexels) per line. */
+  mode: "story" | "script" | "stock";
   script: string;
   cast: StoryCastMember[];
   lines: StoryCutLine[]; // script mode timeline (array order = edit order)

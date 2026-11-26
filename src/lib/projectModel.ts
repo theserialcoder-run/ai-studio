@@ -125,6 +125,7 @@ const arr = (v: unknown): Record<string, unknown>[] =>
   Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => !!x && typeof x === "object") : [];
 const num = (v: unknown, fallback: number): number => (typeof v === "number" && isFinite(v) ? v : fallback);
 const numOrNull = (v: unknown): number | null => (typeof v === "number" && isFinite(v) && v >= 0 ? v : null);
+const httpsUrl = (v: unknown): string => (typeof v === "string" && /^https:\/\/[^\s]+$/.test(v) ? v.slice(0, 2000) : "");
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 const id = (v: unknown): ID => (typeof v === "string" && v ? v : newId());
 
@@ -239,13 +240,19 @@ export function normalizeProject(raw: unknown): Project {
     const segIds = new Set(arr(c.segments).filter(s => assetIds.has(str(s.assetId))).map(s => str(s.id)));
     return {
       id: id(c.id), title: str(c.title, "Untitled story"),
-      mode: c.mode === "script" ? "script" : "story",
+      mode: c.mode === "script" || c.mode === "stock" ? c.mode : "story",
       script: str(c.script),
       cast: arr(c.cast).map(m => ({ name: str(m.name), look: str(m.look) })).filter(m => m.name || m.look).slice(0, 30),
       lines: arr(c.lines).map(l => ({
         id: id(l.id), text: str(l.text),
         sceneId: segIds.has(str(l.sceneId)) ? str(l.sceneId) : null,
         options: strArr(l.options).filter(o => segIds.has(o)).slice(0, 5),
+        query: str(l.query).slice(0, 200),
+        stock: arr(l.stock).map(o => ({
+          id: str(o.id), kind: o.kind === "photo" ? "photo" as const : "video" as const,
+          thumb: str(o.thumb), duration: Math.max(0, num(o.duration, 0)), width: Math.max(0, num(o.width, 0)), height: Math.max(0, num(o.height, 0)),
+          pageUrl: httpsUrl(o.pageUrl), author: str(o.author).slice(0, 120), authorUrl: httpsUrl(o.authorUrl), fileUrl: httpsUrl(o.fileUrl), query: str(o.query).slice(0, 200),
+        })).filter(o => o.id && /^[A-Za-z0-9_-]{1,80}\.jpg$/.test(o.thumb)).slice(0, 8),
       })),
       sources: arr(c.sources).filter(s => assetIds.has(str(s.assetId))).map(s => ({ assetId: str(s.assetId), start: numOrNull(s.start), end: numOrNull(s.end) })),
       style: str(c.style, "life-lesson"), instructions: str(c.instructions),
@@ -327,6 +334,7 @@ export function assetUsage(p: Project, assetId: ID): string[] {
   for (const s of p.shots) if (s.generatedAssetIds.includes(assetId)) uses.push(`Shot ${shotNumber(p, s)} take`);
   for (const c of p.storyCuts) {
     if (c.sources.some(s => s.assetId === assetId)) uses.push(`Story cut: ${c.title} (footage)`);
+    else if (c.segments.some(s => s.assetId === assetId)) uses.push(`Story cut: ${c.title} (clip)`);
     if (c.outputAssetIds.includes(assetId)) uses.push(`Story cut: ${c.title} (render)`);
   }
   return uses;

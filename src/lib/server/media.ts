@@ -157,6 +157,7 @@ export interface RenderPart {
   duration: number; // output length of this part
   hasAudio: boolean;
   voiceFile: string | null; // WAV
+  still?: boolean; // a photo: shown with a slow zoom for `duration`
 }
 
 const W = 1920, H = 1080, FPS = 30, VOICE_DELAY_MS = 150;
@@ -172,17 +173,21 @@ export async function renderParts(parts: RenderPart[], filmVolume: number, workD
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     const partFile = path.join(workDir, `part-${String(i).padStart(4, "0")}.mp4`);
-    const args = ["-hide_banner", "-nostats", "-y", "-ss", String(p.start), "-i", p.file];
+    const args = p.still
+      ? ["-hide_banner", "-nostats", "-y", "-loop", "1", "-framerate", String(FPS), "-t", p.duration.toFixed(3), "-i", p.file]
+      : ["-hide_banner", "-nostats", "-y", "-ss", String(p.start), "-i", p.file];
     let idx = 1;
     let voiceIdx = -1, silentIdx = -1;
     if (p.voiceFile) { args.push("-i", p.voiceFile); voiceIdx = idx++; }
     if (!p.hasAudio) { args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"); silentIdx = idx++; }
     const vol = Math.max(0, Math.min(1, filmVolume));
     const film = p.hasAudio ? `[0:a]aresample=48000,aformat=channel_layouts=stereo,volume=${vol},apad[fa]` : `[${silentIdx}:a]anull[fa]`;
-    const filters = [
-      `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${FPS},format=yuv420p,tpad=stop_mode=clone:stop_duration=${p.duration.toFixed(3)}[v]`,
-      film,
-    ];
+    const frames = Math.max(1, Math.round(p.duration * FPS));
+    const video = p.still
+      // Photos fill the frame and zoom in slowly (about 8% over the clip).
+      ? `[0:v]scale=${W * 1.25}:${H * 1.25}:force_original_aspect_ratio=increase,crop=${W * 1.25}:${H * 1.25},zoompan=z='1+0.08*on/${frames}':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}:fps=${FPS},setsar=1,format=yuv420p[v]`
+      : `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${FPS},format=yuv420p,tpad=stop_mode=clone:stop_duration=${p.duration.toFixed(3)}[v]`;
+    const filters = [video, film];
     if (voiceIdx >= 0) {
       filters.push(`[${voiceIdx}:a]aresample=48000,aformat=channel_layouts=stereo,adelay=${VOICE_DELAY_MS}|${VOICE_DELAY_MS},apad[va]`);
       filters.push(`[fa][va]amix=inputs=2:duration=first:normalize=0[a]`);

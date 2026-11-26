@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { errorResponse } from "@/lib/server/http";
 import { mediaTools } from "@/lib/server/media";
+import { stockConfigured } from "@/lib/server/stock";
 import { listStoryJobs, startStoryJob } from "@/lib/server/storycut";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +12,7 @@ export async function GET(_req: Request, { params }: Ctx) {
   try {
     const { id } = await params;
     const [jobs, tools] = await Promise.all([listStoryJobs(id), mediaTools()]);
-    return NextResponse.json({ jobs, tools });
+    return NextResponse.json({ jobs, tools: { ...tools, pexels: stockConfigured() } });
   } catch (e) {
     return errorResponse(e);
   }

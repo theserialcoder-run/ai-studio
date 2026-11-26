@@ -51,6 +51,7 @@ ComfyUI has **no login**. RunPod's proxy address is hard to guess but public: an
 - **ffmpeg** (free, local) does scene detection and rendering: `sudo apt install ffmpeg`.
 - **Scene descriptions and story writing** use the text AI (Gemini free tier via `GEMINI_API_KEY`, or an OpenAI-compatible model that accepts images). Keyframes (small JPEGs) are sent to the provider; on Gemini's free tier, Google may use inputs to improve its products. A 100-scene film is about 10 description requests plus 1 story request.
 - **Voice:** any configured voice engine (Kokoro by default: local and free).
+- **Stock clips (Pexels):** free API key from pexels.com/api → `PEXELS_API_KEY`. 200 requests/hour, 20,000/month. Pexels licence: free for commercial use and modification; attribution not required but appreciated (Wonderboy lists credits to copy into the video description). Not allowed: showing identifiable people in a bad or offensive light, implying endorsement, reselling unaltered clips. Movie/TV/celebrity references in your notes are turned into generic searches; stock sites don't carry them.
 - **Footage:** use footage you may monetize (Pexels/Pixabay stock, public-domain films). Copyrighted movie clips are usually claimed by YouTube's Content ID.
 
 ## Voice (text-to-speech)
