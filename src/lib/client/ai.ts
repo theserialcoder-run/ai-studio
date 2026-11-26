@@ -22,7 +22,7 @@ const post = (body: unknown, method = "POST"): RequestInit => ({ method, headers
 
 export const aiApi = {
   providers: () => call<ProvidersResponse>("/api/providers"),
-  storyJobs: (pid: ID) => call<{ jobs: StoryJobView[]; tools: { ok: boolean; error?: string; pexels?: boolean } }>(`/api/projects/${pid}/storycuts/jobs`),
+  storyJobs: (pid: ID) => call<{ jobs: StoryJobView[]; tools: { ok: boolean; error?: string; stock?: string | null } }>(`/api/projects/${pid}/storycuts/jobs`),
   startStoryJob: (pid: ID, body: { kind: StoryJob["kind"]; cutId: ID; overwrite?: boolean; sensitivity?: number; rescan?: boolean }) =>
     call<{ job: StoryJob }>(`/api/projects/${pid}/storycuts/jobs`, post(body)).then(d => d.job),
   writeStory: (pid: ID, body: { cutId: ID; style: string; instructions: string }) =>

@@ -1,9 +1,14 @@
 // Free stock footage for Story Cuts (stock mode). Server-only.
+// Providers: Pixabay (preferred when PIXABAY_API_KEY is set) and Pexels (PEXELS_API_KEY).
+// Pixabay API: https://pixabay.com/api/docs/ — free key, 100 requests/60 s, search results
+// must be cached for 24 h, files must be downloaded (no hotlinking), plain-text errors.
+// Pixabay licence: commercial use allowed; no standalone resale, no misleading/endorsement or
+// offensive use of recognisable people, no trademarks/brands for commercial merchandise.
 // Pexels API: https://www.pexels.com/api/documentation/ — free key, 200 requests/hour,
 // 20,000/month. Pexels licence: free for commercial use; identifiable people must not be
 // shown in a bad or offensive light, and endorsement must not be implied. Credit is appreciated
 // (the UI offers a credits list for the video description).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -13,20 +18,115 @@ import { countWords, wordBudget } from "../storyCut";
 import type { Asset, StockOption, StoryCut, StoryCutLine, StoryCutSegment } from "../types";
 import { env, explainHttpError, errorDetail, ProviderError } from "./ai/http";
 import { activeLlm, chat } from "./ai/llm";
-import { projectCacheDir, saveGeneratedFileFromPath } from "./storage";
+import { dataRoot, projectCacheDir, saveGeneratedFileFromPath } from "./storage";
 
 const API = "https://api.pexels.com/v1";
 const MAX_LINES = 150; // keeps a run well under the 200 requests/hour limit
 const OPTIONS_PER_LINE = 4;
 const PHOTO_SECONDS = 6;
 
-export const stockConfigured = () => !!env("PEXELS_API_KEY");
+type StockProvider = "pixabay" | "pexels";
+
+export function stockProvider(): StockProvider | null {
+  if (env("PIXABAY_API_KEY")) return "pixabay";
+  if (env("PEXELS_API_KEY")) return "pexels";
+  return null;
+}
+export const stockConfigured = () => !!stockProvider();
+export const stockProviderName = () => ({ pixabay: "Pixabay", pexels: "Pexels" } as const)[stockProvider() ?? "pixabay"];
+const SETUP_HINT = "Stock clips need a free Pixabay API key: sign up at pixabay.com, copy your key from pixabay.com/api/docs, add PIXABAY_API_KEY=… to .env.local, then restart Wonderboy.";
 const framesDir = (projectId: string) => path.join(projectCacheDir(projectId), "frames");
+
+function requireProvider(): StockProvider {
+  const p = stockProvider();
+  if (!p) throw new ProviderError(SETUP_HINT, 400);
+  return p;
+}
 
 function requireKey(): string {
   const key = env("PEXELS_API_KEY");
-  if (!key) throw new ProviderError("Stock clips need a free Pexels API key: create one at pexels.com/api, add PEXELS_API_KEY=… to .env.local, then restart Wonderboy.", 400);
+  if (!key) throw new ProviderError(SETUP_HINT, 400);
   return key;
+}
+
+/* ------------------------------------------------------------ Pixabay API */
+
+interface PixabayRendition { url?: string; width?: number; height?: number; size?: number; thumbnail?: string }
+interface PixabayVideo { id: number; pageURL: string; tags?: string; duration: number; videos?: Record<"large" | "medium" | "small" | "tiny", PixabayRendition>; user?: string; user_id?: number }
+interface PixabayImage { id: number; pageURL: string; tags?: string; webformatURL?: string; largeImageURL?: string; imageWidth: number; imageHeight: number; user?: string; user_id?: number }
+
+const PIXABAY_CACHE_MS = 24 * 60 * 60_000; // Pixabay requires caching search results for 24 hours
+
+async function pixabay<T>(pathAndQuery: string, useCache = true): Promise<T> {
+  const key = env("PIXABAY_API_KEY");
+  if (!key) throw new ProviderError(SETUP_HINT, 400);
+  const cacheFile = path.join(dataRoot(), "cache", "pixabay", `${createHash("sha1").update(pathAndQuery).digest("hex")}.json`);
+  if (useCache) {
+    try {
+      const st = await fs.stat(cacheFile);
+      if (Date.now() - st.mtimeMs < PIXABAY_CACHE_MS) return JSON.parse(await fs.readFile(cacheFile, "utf8")) as T;
+    } catch { /* not cached */ }
+  }
+  let res: Response;
+  try {
+    res = await fetch(`https://pixabay.com/api/${pathAndQuery}&key=${encodeURIComponent(key)}`, { signal: AbortSignal.timeout(30_000), cache: "no-store" });
+  } catch (e) {
+    throw new ProviderError(`Could not reach Pixabay: ${e instanceof Error ? e.message : String(e)}`, 502);
+  }
+  const text = await res.text();
+  if (res.status === 429) throw new ProviderError("Pixabay's limit was reached (100 searches per minute). Wait a minute, then press the button again: clips already found are kept.", 429);
+  if (!res.ok) throw explainHttpError("Pixabay", res.status === 400 && /key/i.test(text) ? 401 : res.status, text.slice(0, 300));
+  let data: T;
+  try { data = JSON.parse(text) as T; } catch { throw new ProviderError("Pixabay returned an unexpected answer.", 502); }
+  await fs.mkdir(path.dirname(cacheFile), { recursive: true });
+  await fs.writeFile(cacheFile, text).catch(() => {});
+  return data;
+}
+
+/** 1920×1080 ("medium") when available, else 1280×720 ("small"). */
+function pixabayFile(v: PixabayVideo): PixabayRendition | null {
+  const r = v.videos;
+  for (const k of ["medium", "small", "tiny"] as const) if (r?.[k]?.url && (r[k].width ?? 0) <= 1920) return r[k];
+  return null;
+}
+const pixabayUserUrl = (user?: string, id?: number) => (user && id ? `https://pixabay.com/users/${encodeURIComponent(user)}-${id}/` : "https://pixabay.com/");
+
+async function searchPixabay(query: string, kind: "video" | "photo", secondsNeeded: number, exclude: Set<string>): Promise<{ option: Omit<StockOption, "thumb">; thumb: string }[]> {
+  const q = encodeURIComponent(query.trim().slice(0, 100));
+  const out: { option: Omit<StockOption, "thumb">; thumb: string }[] = [];
+  if (kind === "video") {
+    const r = await pixabay<{ hits?: PixabayVideo[] }>(`videos/?q=${q}&video_type=film&min_width=1280&safesearch=true&per_page=20&lang=en`);
+    const hits = (r.hits ?? []).map(v => ({ v, f: pixabayFile(v) }))
+      .filter(({ v, f }) => f && !exclude.has(`pixabay-video-${v.id}`) && (f.width ?? 0) >= 1.3 * (f.height ?? 1)) // landscape only
+      .sort((a, b) => Number(b.v.duration >= secondsNeeded) - Number(a.v.duration >= secondsNeeded));
+    for (const { v, f } of hits.slice(0, OPTIONS_PER_LINE)) {
+      out.push({
+        option: { id: `pixabay-video-${v.id}`, kind: "video", duration: v.duration, width: f!.width ?? 0, height: f!.height ?? 0, pageUrl: v.pageURL, author: v.user ?? "Pixabay", authorUrl: pixabayUserUrl(v.user, v.user_id), fileUrl: f!.url!, query },
+        thumb: v.videos?.tiny?.thumbnail || f!.thumbnail || "",
+      });
+    }
+  }
+  if (kind === "photo" || out.length === 0) {
+    const r = await pixabay<{ hits?: PixabayImage[] }>(`?q=${q}&image_type=photo&orientation=horizontal&min_width=1280&safesearch=true&per_page=10&lang=en`);
+    for (const p of (r.hits ?? []).filter(x => !exclude.has(`pixabay-photo-${x.id}`) && x.largeImageURL).slice(0, OPTIONS_PER_LINE - out.length)) {
+      out.push({
+        option: { id: `pixabay-photo-${p.id}`, kind: "photo", duration: 0, width: p.imageWidth, height: p.imageHeight, pageUrl: p.pageURL, author: p.user ?? "Pixabay", authorUrl: pixabayUserUrl(p.user, p.user_id), fileUrl: p.largeImageURL!, query },
+        thumb: p.webformatURL || p.largeImageURL!,
+      });
+    }
+  }
+  return out.filter(o => o.thumb);
+}
+
+/** A fresh download link by id (Pixabay image links expire after 24 hours). */
+async function refreshPixabay(option: StockOption): Promise<string> {
+  const id = encodeURIComponent(option.id.split("-").pop() ?? "");
+  if (option.kind === "video") {
+    const r = await pixabay<{ hits?: PixabayVideo[] }>(`videos/?id=${id}`, false);
+    return (r.hits?.[0] && pixabayFile(r.hits[0])?.url) || option.fileUrl;
+  }
+  const r = await pixabay<{ hits?: PixabayImage[] }>(`?id=${id}`, false);
+  return r.hits?.[0]?.largeImageURL || option.fileUrl;
 }
 
 /* ------------------------------------------------------------- Pexels API */
@@ -62,7 +162,7 @@ function pickFile(v: PexelsVideo): string {
   return fit?.link ?? "";
 }
 
-const ALLOWED_HOSTS = /(^|\.)(pexels\.com|vimeo\.com|vimeocdn\.com|akamaized\.net)$/i;
+const ALLOWED_HOSTS = /(^|\.)(pixabay\.com|pexels\.com|vimeo\.com|vimeocdn\.com|akamaized\.net)$/i;
 function allowedUrl(url: string): boolean {
   try {
     const u = new URL(url);
@@ -96,8 +196,16 @@ async function saveThumb(projectId: string, url: string): Promise<string> {
   return name;
 }
 
-/** Searches Pexels for a line; downloads thumbnails only. Skips ids in `exclude`. */
+/** Searches the stock provider for a line; downloads thumbnails only. Skips ids in `exclude`. */
 export async function searchStock(projectId: string, query: string, kind: "video" | "photo", secondsNeeded: number, exclude: Set<string>): Promise<StockOption[]> {
+  if (requireProvider() === "pixabay") {
+    const found = await searchPixabay(query, kind, secondsNeeded, exclude);
+    const out: StockOption[] = [];
+    for (const f of found) {
+      try { out.push({ ...f.option, thumb: await saveThumb(projectId, f.thumb) }); } catch { /* skip options whose thumbnail fails */ }
+    }
+    return out;
+  }
   const q = encodeURIComponent(query.trim().slice(0, 100));
   const found: Omit<StockOption, "thumb">[] = [];
   const thumbs: string[] = [];
@@ -127,8 +235,12 @@ export async function searchStock(projectId: string, query: string, kind: "video
 
 /** Downloads a chosen option into the project and returns its asset + a segment covering it. */
 export async function fetchStock(projectId: string, option: StockOption): Promise<{ asset: Asset; segment: StoryCutSegment }> {
+  const provider: StockProvider = option.id.startsWith("pixabay-") ? "pixabay" : "pexels";
+  const name = provider === "pixabay" ? "Pixabay" : "Pexels";
   let url = option.fileUrl;
-  if (option.kind === "video") {
+  if (provider === "pixabay") {
+    try { url = await refreshPixabay(option); } catch { /* fall back to the stored link */ }
+  } else if (option.kind === "video") {
     // Video links are signed and can expire: get a fresh one by id when possible.
     const id = option.id.replace("pexels-video-", "");
     try {
@@ -141,12 +253,12 @@ export async function fetchStock(projectId: string, option: StockOption): Promis
   const tmp = path.join(dir, `${randomUUID()}.${option.kind === "video" ? "mp4" : "jpg"}`);
   try {
     await download(url, tmp, option.kind === "video" ? "video" : "image", 400_000_000);
-    const asset = await saveGeneratedFileFromPath(projectId, tmp, option.kind === "video" ? "video/mp4" : "image/jpeg", `Pexels ${option.kind} ${option.id.split("-").pop()} by ${option.author}`.replace(/[\\/:*?"<>|]/g, "-").slice(0, 80));
-    asset.tags = ["stock", "pexels"];
-    asset.notes = `${option.kind === "video" ? "Video" : "Photo"} by ${option.author} on Pexels: ${option.pageUrl} (search: “${option.query}”). Pexels licence: free to use; don't show identifiable people in a bad light.`;
+    const asset = await saveGeneratedFileFromPath(projectId, tmp, option.kind === "video" ? "video/mp4" : "image/jpeg", `${name} ${option.kind} ${option.id.split("-").pop()} by ${option.author}`.replace(/[\\/:*?"<>|]/g, "-").slice(0, 80));
+    asset.tags = ["stock", provider];
+    asset.notes = `${option.kind === "video" ? "Video" : "Photo"} by ${option.author} on ${name}: ${option.pageUrl} (search: “${option.query}”). ${name} licence: free for commercial use; don't show recognisable people in an offensive or misleading way.`;
     const segment: StoryCutSegment = {
       id: randomUUID(), assetId: asset.id, start: 0, end: option.kind === "video" ? Math.max(1, option.duration) : PHOTO_SECONDS,
-      frames: [option.thumb], description: `${option.query} (Pexels, ${option.author})`, narration: "", skip: false,
+      frames: [option.thumb], description: `${option.query} (${name}, ${option.author})`, narration: "", skip: false,
     };
     return { asset, segment };
   } finally {
@@ -246,7 +358,7 @@ export interface StockResult { lines: StoryCutLine[]; segments: StoryCutSegment[
  * `save` is called after every line so partial results survive a failure (e.g. the hourly limit).
  */
 export async function runStockSearch(projectId: string, cut: StoryCut, progress: (m: string) => void, save: (r: StockResult) => Promise<void>): Promise<StockResult> {
-  requireKey();
+  requireProvider();
   progress("Reading your script…");
   const maxWords = Math.max(12, wordBudget(9, cut.voice.speed));
   const plan = await planLines(cut.script, maxWords);
@@ -286,7 +398,7 @@ export async function runStockSearch(projectId: string, cut: StoryCut, progress:
     result.notes = `${result.lines.length} of ${plan.lines.length} lines done.`;
     await save(result);
   }
-  result.notes = `${result.lines.length} lines planned from ${plan.by}; ${result.assets.length} clips downloaded.${missing ? ` ${missing} line${missing > 1 ? "s" : ""} found nothing: search with other words.` : ""} Clips: Pexels (free licence; credits below).`;
+  result.notes = `${result.lines.length} lines planned from ${plan.by}; ${result.assets.length} clips downloaded.${missing ? ` ${missing} line${missing > 1 ? "s" : ""} found nothing: search with other words.` : ""} Clips: ${stockProviderName()} (free licence; credits below).`;
   return result;
 }
 

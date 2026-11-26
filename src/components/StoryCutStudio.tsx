@@ -320,7 +320,7 @@ export function StoryCutStudio() {
     );
   }
 
-  /** Which of a line's found clips is on the timeline (matched by its Pexels page link in the asset notes). */
+  /** Which of a line's found clips is on the timeline (matched by its stock page link in the asset notes). */
   function chosenStockId(l: StoryCutLine, c: StoryCut): string | null {
     const seg = c.segments.find(s => s.id === l.sceneId);
     const asset = seg ? assetById(project, seg.assetId) : undefined;
@@ -378,14 +378,14 @@ export function StoryCutStudio() {
     );
   }
 
-  /** "Video by X on Pexels: url" for every stock clip on the timeline, for the YouTube description. */
+  /** "Video by X on Pixabay: url" for every stock clip on the timeline, for the YouTube description. */
   function stockCredits(c: StoryCut): string {
     const used = new Set(c.lines.map(l => l.sceneId).filter(Boolean));
     const out: string[] = [];
     for (const seg of c.segments.filter(s => used.has(s.id))) {
       const a = assetById(project, seg.assetId);
-      const m = a && /^(Video|Photo) by (.+?) on Pexels: (\S+)/.exec(a.notes);
-      if (m) out.push(`${m[1]} by ${m[2]} on Pexels: ${m[3]}`);
+      const m = a && /^(Video|Photo) by (.+?) on (Pixabay|Pexels): (\S+)/.exec(a.notes);
+      if (m) out.push(`${m[1]} by ${m[2]} on ${m[3]}: ${m[4]}`);
     }
     return [...new Set(out)].join("\n");
   }
@@ -496,12 +496,12 @@ export function StoryCutStudio() {
       <div className="panel">
         <span className="field-label">HOW DO YOU WANT TO MAKE THIS VIDEO?</span>
         <div className="chip-select" role="radiogroup" aria-label="How to make the video">
-          <button type="button" className={`chip${stockMode ? " on" : ""}`} aria-pressed={stockMode} onClick={() => editCut(c => { c.mode = "stock"; }, "Switched a story cut to stock mode")}>My script + free stock clips (Pexels)</button>
+          <button type="button" className={`chip${stockMode ? " on" : ""}`} aria-pressed={stockMode} onClick={() => editCut(c => { c.mode = "stock"; }, "Switched a story cut to stock mode")}>My script + free stock clips</button>
           <button type="button" className={`chip${scriptMode ? " on" : ""}`} aria-pressed={scriptMode} onClick={() => editCut(c => { c.mode = "script"; }, "Switched a story cut to script mode")}>My script + clips from my film</button>
           <button type="button" className={`chip${!lineMode ? " on" : ""}`} aria-pressed={!lineMode} onClick={() => editCut(c => { c.mode = "story"; }, "Switched a story cut to AI story mode")}>Write a story for my footage</button>
         </div>
         <p className="muted small">
-          {stockMode ? "Best when the narrator tells the story and characters don't need to look the same from shot to shot. Clips come from Pexels: free for monetized videos."
+          {stockMode ? "Best when the narrator tells the story and characters don't need to look the same from shot to shot. Clips come from Pixabay: free for monetized videos."
             : scriptMode ? "Best for consistent characters: every clip comes from one film you upload."
             : "The AI writes a new story where the people in your footage become the characters."}
         </p>
@@ -539,16 +539,21 @@ export function StoryCutStudio() {
         {stockMode && <>
           <div className="panel">
             <h3 className="step-title"><span className="step-num">2</span> Find free stock clips</h3>
-            {tools && !tools.pexels && <p className="warn-text">Needs a free Pexels API key: sign up at pexels.com/api, copy your key, add <code>PEXELS_API_KEY=…</code> to .env.local, then close the Wonderboy window and start it again.</p>}
+            {tools && !tools.stock && <p className="warn-text">Needs a free Pixabay API key: sign up at pixabay.com, copy your key from pixabay.com/api/docs, add <code>PIXABAY_API_KEY=…</code> to .env.local, then close the Wonderboy window and start it again.</p>}
             {!ai.providers?.activeLlm && ai.providers && <p className="muted small">No AI key set: lines and searches come straight from your bracket notes. With GEMINI_API_KEY the AI splits the script and writes better searches.</p>}
             <div className="find-clips">
-              <button className="button primary big" disabled={!cut.script.trim() || !!busy || running.has("stock") || tools?.pexels === false} onClick={findStock}>
+              <button className="button primary big" disabled={!cut.script.trim() || !!busy || running.has("stock") || (!!tools && !tools.stock)} onClick={findStock}>
                 {running.has("stock") ? "Finding clips…" : cut.lines.length ? "Find stock clips again" : "Find stock clips for my script"}
               </button>
               {stockJob?.status === "running" && <p className="small find-progress">{stockJob.progress ?? "Starting…"}</p>}
-              {!running.has("stock") && <small className="muted">Searches Pexels for each line and downloads the best clip (about 5–30 MB each). A 2–3 minute script takes a few minutes. Pexels allows 200 searches an hour.</small>}
+              {!running.has("stock") && <small className="muted">Searches {tools?.stock ?? "Pixabay"} for each line and downloads the best clip (about 5–30 MB each). A 2–3 minute script takes a few minutes.</small>}
             </div>
-            <p className="muted small">Pexels licence: free for commercial use. Don&apos;t show identifiable people in an offensive way or imply they endorse something. <a href="https://www.pexels.com" target="_blank" rel="noreferrer">Videos provided by Pexels</a>.</p>
+            <p className="muted small">
+              {tools?.stock ?? "Pixabay"} licence: free for commercial use. Don&apos;t show recognisable people in an offensive or misleading way, or imply they endorse something.{" "}
+              {tools?.stock === "Pexels"
+                ? <a href="https://www.pexels.com" target="_blank" rel="noreferrer">Videos provided by Pexels</a>
+                : <a href="https://pixabay.com" target="_blank" rel="noreferrer">Videos and photos from Pixabay</a>}.
+            </p>
           </div>
 
           {cut.lines.length > 0 && (

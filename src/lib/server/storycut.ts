@@ -59,7 +59,7 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
   if (kind !== "describe" && kind !== "stock") { const t = await mediaTools(); if (!t.ok) bad(t.error!); }
   if (kind === "stock") {
     if (!cut.script.trim()) bad("Paste your script first.");
-    if (!stockConfigured()) bad("Stock clips need a free Pexels API key: create one at pexels.com/api, add PEXELS_API_KEY=… to .env.local, then restart Wonderboy.");
+    if (!stockConfigured()) bad("Stock clips need a free Pixabay API key: sign up at pixabay.com, copy your key from pixabay.com/api/docs, add PIXABAY_API_KEY=… to .env.local, then restart Wonderboy.");
   }
   if ((kind === "detect" || kind === "auto") && !cut.sources.length) bad("Add your film (or clips) first.");
   if (kind === "auto") {
@@ -393,7 +393,7 @@ export async function stockSearchLine(projectId: string, body: { cutId?: unknown
   const query = typeof body.query === "string" ? body.query.trim().slice(0, 100) : "";
   if (!query) bad("Type what you want to see.");
   const options = await searchStock(projectId, query, body.kind === "photo" ? "photo" : "video", secondsFor(line.text, cut.voice.speed), new Set());
-  if (!options.length) bad(`Nothing found on Pexels for “${query}”. Try simpler words.`, 404);
+  if (!options.length) bad(`Nothing found for “${query}”. Try simpler words.`, 404);
   return { options, query };
 }
 

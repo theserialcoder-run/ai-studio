@@ -11,7 +11,7 @@ import type { Workspace } from "./useWorkspace";
 export function useStoryCuts(ws: Workspace) {
   const projectId = ws.project?.id ?? null;
   const [jobs, setJobs] = useState<StoryJobView[]>([]);
-  const [tools, setTools] = useState<{ ok: boolean; error?: string; pexels?: boolean } | null>(null);
+  const [tools, setTools] = useState<{ ok: boolean; error?: string; stock?: string | null } | null>(null);
   const importing = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
@@ -79,6 +79,6 @@ export function useStoryCuts(ws: Workspace) {
 export function dropUnusedStock(d: Project, assetIds: ID[]) {
   for (const id of new Set(assetIds)) {
     const a = d.assets.find(x => x.id === id);
-    if (a && a.tags.includes("pexels") && assetUsage(d, id).length === 0) removeAsset(d, id);
+    if (a && a.tags.includes("stock") && assetUsage(d, id).length === 0) removeAsset(d, id);
   }
 }
