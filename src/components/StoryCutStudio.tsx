@@ -1,7 +1,7 @@
 "use client";
 // Story Cuts: tell a new, original story over existing footage (free stock clips,
 // public-domain films). Footage → scenes → AI descriptions → AI story → voice + MP4.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { assetById, fileUrl, makeStoryCut, nowIso } from "@/lib/projectModel";
 import { aiApi } from "@/lib/client/ai";
 import { dropUnusedStock, useStoryCuts } from "@/lib/client/useStoryCuts";
@@ -40,6 +40,14 @@ export function StoryCutStudio() {
   const [pickLineId, setPickLineId] = useState<ID | null>(null);
   const [rescan, setRescan] = useState(false);
   const [lineQuery, setLineQuery] = useState<Record<ID, string>>({});
+  // Ticks once a second while a job runs, so elapsed times stay live.
+  const [now, setNow] = useState(() => Date.now());
+  const anyRunning = jobs.some(j => j.status === "running");
+  useEffect(() => {
+    if (!anyRunning) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [anyRunning]);
 
   const cut = project.storyCuts.find(c => c.id === selectedId) ?? project.storyCuts[0] ?? null;
   const audioProviders = ai.providers?.audio ?? [];
@@ -411,12 +419,30 @@ export function StoryCutStudio() {
     );
   }
 
+  /** How long a job has run (live) or took, as m:ss / h:mm:ss. */
+  function elapsed(j: StoryJobView): string {
+    const ms = Math.max(0, (j.finishedAt ? Date.parse(j.finishedAt) : now) - Date.parse(j.createdAt));
+    const s = Math.round(ms / 1000);
+    return s >= 3600 ? `${Math.floor(s / 3600)}:${formatTime(s % 3600).padStart(5, "0")}` : formatTime(s);
+  }
+
+  const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+  /** Live status line for a running job: elapsed time + current step. */
+  function renderLive(j: StoryJobView | undefined) {
+    if (j?.status !== "running") return null;
+    return <p className="small find-progress"><span className="elapsed">⏱ {elapsed(j)}</span> {j.progress ?? "Starting…"}</p>;
+  }
+
   function renderJob(j: StoryJobView) {
     return (
       <div key={j.id} className={`gen-card ${j.status}`}>
         <div className="gen-head">
           <span className={`status-pill ${j.status}`}>{j.status === "running" ? "Running" : j.status === "succeeded" ? "Done" : "Failed"}</span>
           <small className="muted">{KIND_LABEL[j.kind]}</small>
+          <small className="muted job-time" title={`Started ${new Date(j.createdAt).toLocaleString()}`}>
+            {j.status === "running" ? `⏱ ${elapsed(j)} so far` : `took ${elapsed(j)}`} · started {clock(j.createdAt)}
+          </small>
         </div>
         {j.status === "running" && <p className="small">{j.progress ?? "Working…"}</p>}
         {j.error && <p className="error-text small">{j.error}</p>}
@@ -502,7 +528,7 @@ export function StoryCutStudio() {
         </div>
         <p className="muted small">
           {stockMode ? "Best when the narrator tells the story and characters don't need to look the same from shot to shot. Clips come from Pixabay: free for monetized videos."
-            : scriptMode ? "Best for consistent characters: every clip comes from one film you upload."
+            : scriptMode ? "Clips come from videos you upload. With one film, characters stay consistent; with several, the AI mixes them evenly."
             : "The AI writes a new story where the people in your footage become the characters."}
         </p>
       </div>
@@ -545,7 +571,7 @@ export function StoryCutStudio() {
               <button className="button primary big" disabled={!cut.script.trim() || !!busy || running.has("stock") || (!!tools && !tools.stock)} onClick={findStock}>
                 {running.has("stock") ? "Finding clips…" : cut.lines.length ? "Find stock clips again" : "Find stock clips for my script"}
               </button>
-              {stockJob?.status === "running" && <p className="small find-progress">{stockJob.progress ?? "Starting…"}</p>}
+              {renderLive(stockJob)}
               {!running.has("stock") && <small className="muted">Searches {tools?.stock ?? "Pixabay"} for each line and downloads the best clip (about 5–30 MB each). A 2–3 minute script takes a few minutes.</small>}
             </div>
             <p className="muted small">
@@ -604,11 +630,15 @@ export function StoryCutStudio() {
           }, "Uploaded footage for a story cut")} />
         </div>
           {!ai.providers?.activeLlm && ai.providers && <p className="warn-text">Finding clips needs the AI: add GEMINI_API_KEY to .env.local (free at aistudio.google.com), then close the Wonderboy window and start it again.</p>}
+          {cut.sources.length > 1 && <label className="check">
+            <input type="checkbox" checked={cut.mix} onChange={e => editCut(c => { c.mix = e.target.checked; }, e.target.checked ? "Mix clips from all videos" : "Use the best match from any video")} />
+            <span>Mix clips from all my videos <small className="muted">(spread evenly; turn off to keep the best match and the same faces)</small></span>
+          </label>}
           <div className="find-clips">
             <button className="button primary big" disabled={!cut.sources.length || !cut.script.trim() || !!busy || running.has("auto") || running.has("detect") || running.has("describe") || tools?.ok === false} onClick={findClips}>
               {running.has("auto") ? "Finding clips…" : cut.lines.length ? "Find clips again" : "Find clips for my script"}
             </button>
-            {autoJob?.status === "running" && <p className="small find-progress">{autoJob.progress ?? "Starting…"}</p>}
+            {renderLive(autoJob)}
             {!running.has("auto") && <small className="muted">The AI scans your film, watches every scene, casts your characters and picks a clip for each line. A 15-minute stretch of film takes about 5–15 minutes on this laptop.</small>}
           </div>
           <details className="advanced">
@@ -627,6 +657,7 @@ export function StoryCutStudio() {
             </button>
             <label className="check inline"><input type="checkbox" checked={overwriteDescriptions} onChange={e => setOverwriteDescriptions(e.target.checked)} /><span>Redo existing descriptions</span></label>
           </div>
+          {renderLive(cutJobs.find(j => j.kind === "describe"))}
               <div className="button-row">
                 <button className="button secondary" disabled={!!busy || !cut.script.trim() || !described} onClick={() => void matchScript()}>{busy === "match" ? "Matching…" : "Only re-match clips (keep scenes and cast)"}</button>
               </div>
@@ -687,6 +718,7 @@ export function StoryCutStudio() {
             {running.has("detect") ? "Finding scenes…" : cut.segments.length ? "Detect scenes again" : "Detect scenes"}
           </button>
         </div>
+        {renderLive(cutJobs.find(j => j.kind === "detect"))}
         <p className="muted small">Long films take a few minutes on this laptop. Set FROM/TO (e.g. 12:30) to use only part of a film.</p>
         </div>
 
@@ -700,6 +732,7 @@ export function StoryCutStudio() {
             </button>
             <label className="check inline"><input type="checkbox" checked={overwriteDescriptions} onChange={e => setOverwriteDescriptions(e.target.checked)} /><span>Redo existing descriptions</span></label>
           </div>
+          {renderLive(cutJobs.find(j => j.kind === "describe"))}
             <h3 className="step-title"><span className="step-num">3</span> Story</h3>
           <div className="form-grid">
             <label>STYLE
@@ -761,6 +794,7 @@ export function StoryCutStudio() {
               {running.has("render") ? "Rendering…" : "Render video"}
             </button>
           </div>
+          {renderLive(cutJobs.find(j => j.kind === "render"))}
 
           {outputs.length > 0 && (
             <div className="stack story-outputs">

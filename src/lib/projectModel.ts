@@ -72,7 +72,7 @@ export function makeStoryCut(partial: Partial<StoryCut> = {}): StoryCut {
   const t = nowIso();
   return {
     id: newId(), title: "Untitled story", mode: "script", script: "", cast: [], lines: [], sources: [], style: "life-lesson", instructions: "",
-    voice: { providerId: "kokoro", voice: "af_heart", speed: 1 }, filmVolume: 0.15, segments: [], outputAssetIds: [],
+    voice: { providerId: "kokoro", voice: "af_heart", speed: 1 }, filmVolume: 0.15, mix: true, segments: [], outputAssetIds: [],
     createdAt: t, updatedAt: t, ...partial,
   };
 }
@@ -258,6 +258,7 @@ export function normalizeProject(raw: unknown): Project {
       style: str(c.style, "life-lesson"), instructions: str(c.instructions),
       voice: { providerId: str(v.providerId, "kokoro"), voice: str(v.voice, "af_heart"), speed: clamp(num(v.speed, 1), 0.5, 2) },
       filmVolume: clamp(num(c.filmVolume, 0.15), 0, 1),
+      mix: c.mix !== false,
       segments: arr(c.segments).filter(s => assetIds.has(str(s.assetId))).map(s => {
         const start = Math.max(0, num(s.start, 0));
         return {

@@ -190,6 +190,8 @@ export interface StoryCut {
   instructions: string; // extra story direction
   voice: { providerId: string; voice: string; speed: number };
   filmVolume: number; // 0–1, original audio level under the voice
+  /** Script mode with several videos: spread the picks evenly across them (instead of the best match wherever it is). */
+  mix: boolean;
   segments: StoryCutSegment[]; // array order = edit order
   outputAssetIds: ID[]; // rendered videos, newest last
   createdAt: string;

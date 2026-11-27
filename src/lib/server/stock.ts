@@ -334,9 +334,17 @@ export function planWithoutAi(script: string, maxWords: number): PlannedLine[] {
   return lines;
 }
 
-async function planLines(script: string, maxWords: number): Promise<{ lines: PlannedLine[]; by: string }> {
+async function planLines(script: string, maxWords: number, progress: (m: string) => void): Promise<{ lines: PlannedLine[]; by: string }> {
   if (!activeLlm()) return { lines: planWithoutAi(script, maxWords), by: "the bracket notes (no AI key set)" };
-  const r = await chat({ system: PLAN_SYSTEM.replace("MAX_WORDS", String(maxWords)), json: true, maxTokens: 16384, messages: [{ role: "user", content: script.slice(0, 30000) }] });
+  let r: { text: string; provider: string };
+  try {
+    r = await chat({ system: PLAN_SYSTEM.replace("MAX_WORDS", String(maxWords)), json: true, maxTokens: 16384, onRetry: progress, messages: [{ role: "user", content: script.slice(0, 30000) }] });
+  } catch (e) {
+    // The AI is optional here: the bracket notes are enough to search.
+    const lines = planWithoutAi(script, maxWords);
+    if (!lines.length) throw e;
+    return { lines, by: `the bracket notes (the AI was unavailable: ${e instanceof Error ? e.message.split(". ")[0] : "error"})` };
+  }
   const data = parseJsonObject(r.text);
   const lines = (Array.isArray(data.lines) ? data.lines as { text?: unknown; query?: unknown; type?: unknown }[] : [])
     .filter(l => typeof l.text === "string" && l.text.trim())
@@ -361,7 +369,7 @@ export async function runStockSearch(projectId: string, cut: StoryCut, progress:
   requireProvider();
   progress("Reading your script…");
   const maxWords = Math.max(12, wordBudget(9, cut.voice.speed));
-  const plan = await planLines(cut.script, maxWords);
+  const plan = await planLines(cut.script, maxWords, progress);
   if (plan.lines.length > MAX_LINES) throw new ProviderError(`The script has ${plan.lines.length} lines; the limit per run is ${MAX_LINES}. Split it into parts.`, 400);
 
   // Keep clips already chosen for identical lines from an earlier run (no re-download).

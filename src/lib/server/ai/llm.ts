@@ -4,9 +4,13 @@ import { env, errorDetail, explainHttpError, fetchOrThrow, ProviderError } from 
 
 /** `images` (base64 JPEG/PNG) are sent with the message to vision-capable models. */
 export interface LlmMessage { role: "user" | "assistant"; content: string; images?: { mimeType: string; data: string }[] }
-export interface LlmRequest { system: string; messages: LlmMessage[]; json?: boolean; maxTokens?: number }
+export interface LlmRequest {
+  system: string; messages: LlmMessage[]; json?: boolean; maxTokens?: number;
+  /** Called with a short status while waiting to retry a busy provider. */
+  onRetry?: (message: string) => void;
+}
 
-interface LlmProvider { info(): LlmProviderInfo; chat(req: LlmRequest): Promise<string> }
+interface LlmProvider { info(): LlmProviderInfo; chat(req: LlmRequest, modelOverride?: string): Promise<string> }
 
 /* ---------------------------------------------------------------- Gemini */
 // generateContent is documented by Google as still fully supported (the newer
@@ -21,10 +25,10 @@ const gemini: LlmProvider = {
     setup: "Create a key at aistudio.google.com → Get API key. Optional: GEMINI_TEXT_MODEL.",
     conditioning: "Text model.",
   }),
-  async chat({ system, messages, json, maxTokens }) {
+  async chat({ system, messages, json, maxTokens }, modelOverride) {
     const key = env("GEMINI_API_KEY");
     if (!key) throw new ProviderError("Gemini is not configured. Add GEMINI_API_KEY to .env.local and restart.", 400);
-    const model = gemini.info().model;
+    const model = modelOverride || gemini.info().model;
     const res = await fetchOrThrow("Gemini", `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
@@ -98,8 +102,38 @@ export function activeLlm(): LlmProvider | null {
   return configured.find(p => p.info().id === preferred) ?? configured[0] ?? null;
 }
 
+// Busy or rate-limited providers (Gemini's free tier often answers 503 "high demand") are
+// retried a few times. Text calls are free-tier/cheap; paid image/video jobs are never retried.
+const RETRY_WAITS_S = [5, 15, 40];
+const isTransient = (e: unknown) => e instanceof ProviderError && (e.status === 502 || e.status === 429);
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
 export async function chat(req: LlmRequest): Promise<{ text: string; provider: string }> {
   const p = activeLlm();
   if (!p) throw new ProviderError("No text AI provider is configured. Add GEMINI_API_KEY (free tier) to .env.local and restart — see docs/PROVIDERS.md.", 400);
-  return { text: await p.chat(req), provider: `${p.info().label} · ${p.info().model}` };
+  const info = p.info();
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= RETRY_WAITS_S.length; attempt++) {
+    try {
+      return { text: await p.chat(req), provider: `${info.label} · ${info.model}` };
+    } catch (e) {
+      lastError = e;
+      if (!isTransient(e) || attempt === RETRY_WAITS_S.length) break;
+      const wait = RETRY_WAITS_S[attempt];
+      req.onRetry?.(`${info.label} is busy; trying again in ${wait} s (attempt ${attempt + 2} of ${RETRY_WAITS_S.length + 1})…`);
+      await sleep(wait * 1000);
+    }
+  }
+  // Still busy: try Gemini's lighter model once (often has spare capacity). Keep the original error if it fails too.
+  const fallback = env("GEMINI_FALLBACK_MODEL") || "gemini-3.5-flash-lite";
+  if (info.id === "gemini" && isTransient(lastError) && fallback !== info.model && fallback !== "none") {
+    req.onRetry?.(`${info.model} is still busy; trying ${fallback}…`);
+    try {
+      return { text: await p.chat(req, fallback), provider: `${info.label} · ${fallback} (fallback)` };
+    } catch { /* report the original error */ }
+  }
+  if (isTransient(lastError)) {
+    throw new ProviderError(`${(lastError as Error).message} Wonderboy retried ${RETRY_WAITS_S.length} times. Wait a few minutes and press the button again: finished work is kept.`, (lastError as ProviderError).status);
+  }
+  throw lastError;
 }

@@ -964,4 +964,7 @@ button.stat-card:hover { border-color: #4a4535; }
 .stock-search { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px; align-items: center; }
 .stock-search .field { margin: 0; padding: 6px 8px; font-size: var(--fs-xs); }
 .alt-thumb:disabled { opacity: 0.5; cursor: wait; }
+.elapsed { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text); margin-right: 6px; }
+.gen-head .job-time { margin-left: auto; }
+.story-cuts .gen-head { flex-wrap: wrap; }
 

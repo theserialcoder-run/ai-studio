@@ -217,7 +217,7 @@ async function describeSegments(projectId: string, segments: StoryCutSegment[], 
         lines.push(`Scene ${i + 1} (${segmentLength(s).toFixed(1)} s): ${n ? `image${n > 1 ? "s" : ""} ${first}${n > 1 ? `–${images.length}` : ""}` : "no image"}`);
       }
       const r = await chat({
-        system: DESCRIBE_SYSTEM, json: true, maxTokens: 4096,
+        system: DESCRIBE_SYSTEM, json: true, maxTokens: 4096, onRetry: progress,
         messages: [{ role: "user", content: `The images below are in order.\n${lines.join("\n")}\n\nDescribe scenes 1–${batch.length}.`, images }],
       });
       provider = r.provider;
@@ -293,8 +293,20 @@ export async function writeStory(projectId: string, body: { cutId?: unknown; sty
 
 /* ----------------------------------------------------------- script mode */
 
+/** 1-based video number of each source (in the order the user added them). */
+function videoNumbers(cut: StoryCut): Map<ID, number> {
+  return new Map(cut.sources.map((s, i) => [s.assetId, i + 1]));
+}
+
+/** Mixing applies only with more than one video that actually has scenes. */
+function mixing(cut: StoryCut): boolean {
+  return cut.mix && new Set(cut.segments.map(s => s.assetId)).size > 1;
+}
+
 function sceneCatalogue(cut: StoryCut): string {
-  return cut.segments.map((s, i) => `Scene ${i + 1} (${segmentLength(s).toFixed(1)} s): ${s.description.trim() || "(no description)"}`).join("\n");
+  const vid = videoNumbers(cut);
+  const multi = cut.sources.length > 1;
+  return cut.segments.map((s, i) => `Scene ${i + 1}${multi ? ` [video ${vid.get(s.assetId) ?? "?"}]` : ""} (${segmentLength(s).toFixed(1)} s): ${s.description.trim() || "(no description)"}`).join("\n");
 }
 
 function requireScriptInputs(cut: StoryCut) {
@@ -316,9 +328,9 @@ export async function suggestCast(projectId: string, body: { cutId?: unknown }):
   return castFor(cut);
 }
 
-async function castFor(cut: StoryCut): Promise<{ cast: { name: string; look: string }[]; provider: string }> {
+async function castFor(cut: StoryCut, progress?: (m: string) => void): Promise<{ cast: { name: string; look: string }[]; provider: string }> {
   const r = await chat({
-    system: CAST_SYSTEM, json: true, maxTokens: 2048,
+    system: CAST_SYSTEM, json: true, maxTokens: 2048, onRetry: progress,
     messages: [{ role: "user", content: `SCRIPT:\n${cut.script.trim().slice(0, 20000)}\n\nFOOTAGE SCENES:\n${sceneCatalogue(cut)}` }],
   });
   const data = parseJsonObject(r.text);
@@ -335,38 +347,78 @@ const MATCH_SYSTEM = `You are a film editor. You illustrate a narrated script wi
 3. Use each scene as a first choice at most once across all lines, and keep the story's visual flow (avoid jumping between very different places without reason).
 Return JSON only: {"lines":[{"text":"…","scenes":[<n>,<n>,<n>]}]}`;
 
+const MIX_RULES = `
+MIXING (most important): the footage comes from VIDEOS different videos, marked [video N]. The finished film must use all of them about equally: each video for roughly 1 in VIDEOS lines, and never the same video for more than 2 lines in a row. Variety matters more than a perfect match or the same face: a character may be shown by different people in different videos. For each line give up to 5 scenes, taken from at least 2 different videos.`;
+
 export async function matchScript(projectId: string, body: { cutId?: unknown }): Promise<{ lines: StoryCutLine[]; notes: string; provider: string }> {
   const cut = await loadCut(projectId, String(body.cutId ?? ""));
   requireScriptInputs(cut);
   return matchFor(cut);
 }
 
-async function matchFor(cut: StoryCut): Promise<{ lines: StoryCutLine[]; notes: string; provider: string }> {
+async function matchFor(cut: StoryCut, progress?: (m: string) => void): Promise<{ lines: StoryCutLine[]; notes: string; provider: string }> {
   const lengths = cut.segments.map(segmentLength).sort((a, b) => a - b);
   const median = lengths[Math.floor(lengths.length / 2)] ?? 5;
   const maxWords = Math.min(30, Math.max(10, wordBudget(median * 1.6, cut.voice.speed)));
+  const mix = mixing(cut);
+  const videos = new Set(cut.segments.map(s => s.assetId)).size;
   const cast = cut.cast.filter(m => m.name.trim());
   const prompt = [
-    cast.length ? `CAST (character = person in the footage):\n${cast.map(m => `${m.name} = ${m.look || "(not in the footage)"}`).join("\n")}` : "CAST: not given; infer who is who from the descriptions.",
+    cast.length ? `CAST (character = person in the footage${mix ? "; a soft preference only, variety comes first" : ""}):\n${cast.map(m => `${m.name} = ${m.look || "(not in the footage)"}`).join("\n")}` : "CAST: not given; infer who is who from the descriptions.",
     `SCRIPT:\n${cut.script.trim().slice(0, 20000)}`,
     `FOOTAGE SCENES:\n${sceneCatalogue(cut)}`,
   ].join("\n\n");
-  const r = await chat({ system: MATCH_SYSTEM.replace("MAX_WORDS", String(maxWords)), json: true, maxTokens: 16384, messages: [{ role: "user", content: prompt }] });
+  const system = MATCH_SYSTEM.replace("MAX_WORDS", String(maxWords)) + (mix ? MIX_RULES.replace(/VIDEOS/g, String(videos)) : "");
+  const r = await chat({ system, json: true, maxTokens: 16384, onRetry: progress, messages: [{ role: "user", content: prompt }] });
   const data = parseJsonObject(r.text);
-  const raw = Array.isArray(data.lines) ? data.lines as { text?: unknown; scenes?: unknown }[] : [];
+  const raw = (Array.isArray(data.lines) ? data.lines as { text?: unknown; scenes?: unknown }[] : [])
+    .filter(l => typeof l.text === "string" && l.text.trim()).slice(0, 500);
+  if (!raw.length) bad("The AI returned no lines. Try again.", 502);
+
+  const segById = new Map(cut.segments.map(s => [s.id, s]));
   const used = new Set<ID>();
+  const perVideo = new Map<ID, number>();
+  const cap = Math.ceil(raw.length / Math.max(1, videos)) + 1; // fair share per video, plus one
   let unmatched = 0;
-  const lines = raw.filter(l => typeof l.text === "string" && l.text.trim()).slice(0, 500).map(l => {
-    const options = [...new Set((Array.isArray(l.scenes) ? l.scenes : []).map(n => cut.segments[Number(n) - 1]?.id).filter((x): x is ID => !!x))].slice(0, 3);
-    // First unused suggestion becomes the pick, so a scene isn't shown twice.
-    const sceneId = options.find(o => !used.has(o)) ?? null;
-    if (sceneId) used.add(sceneId); else unmatched++;
+  let reassigned = 0;
+  let previous: ID | null = null;
+
+  const lines: StoryCutLine[] = raw.map(l => {
+    let options = [...new Set((Array.isArray(l.scenes) ? l.scenes : []).map(n => cut.segments[Number(n) - 1]?.id).filter((x): x is ID => !!x))].slice(0, mix ? 5 : 3);
+    const free = options.filter(o => !used.has(o));
+    let sceneId: ID | null = free[0] ?? null;
+    if (mix) {
+      // Among the AI's suggestions, prefer the least-used video (AI order breaks ties), avoiding the previous line's video.
+      const score = (o: ID) => { const a = segById.get(o)!.assetId; return (perVideo.get(a) ?? 0) * 2 + (a === previous ? 1 : 0); };
+      sceneId = [...free].sort((a, b) => score(a) - score(b))[0] ?? null;
+      const least = Math.min(...[...new Set(cut.segments.map(s => s.assetId))].map(a => perVideo.get(a) ?? 0));
+      const overused = (id: ID | null) => { const n = id ? perVideo.get(segById.get(id)!.assetId) ?? 0 : Infinity; return n >= cap || n > least + 1; };
+      if (overused(sceneId)) {
+        // Every suggestion is from an overused video (or none is left): take an unused scene from the least-used video, at random.
+        const counts = [...new Set(cut.segments.map(s => s.assetId))].map(a => ({ a, n: perVideo.get(a) ?? 0 })).sort((x, y) => x.n - y.n);
+        for (const { a } of counts) {
+          const pool = cut.segments.filter(s => s.assetId === a && !used.has(s.id) && s.assetId !== previous);
+          if (pool.length) { sceneId = pool[Math.floor(Math.random() * pool.length)].id; reassigned++; break; }
+        }
+        if (sceneId && !options.includes(sceneId)) options = [sceneId, ...options].slice(0, 5);
+      }
+    }
+    if (sceneId) {
+      used.add(sceneId);
+      const a = segById.get(sceneId)!.assetId;
+      perVideo.set(a, (perVideo.get(a) ?? 0) + 1);
+      previous = a;
+    } else unmatched++;
     return { id: randomUUID(), text: String(l.text).replace(/\s+/g, " ").trim().slice(0, 1000), sceneId, options, query: "", stock: [] };
   });
-  if (!lines.length) bad("The AI returned no lines. Try again.", 502);
+
+  const vid = videoNumbers(cut);
+  const spread = cut.sources.length > 1
+    ? ` Clips per video: ${cut.sources.map(s => `video ${vid.get(s.assetId)}: ${perVideo.get(s.assetId) ?? 0}`).join(", ")}.${reassigned ? ` ${reassigned} picked at random from less-used videos to keep the mix even: check they fit.` : ""}`
+    : "";
   return {
     lines, provider: r.provider,
-    notes: `${lines.length} lines, ${lines.length - unmatched} with a scene.${unmatched ? ` ${unmatched} need a scene: pick one yourself.` : ""}`,
+    notes: `${lines.length} lines, ${lines.length - unmatched} with a scene.${unmatched ? ` ${unmatched} need a scene: pick one yourself.` : ""}${spread}`,
   };
 }
 
@@ -418,16 +470,16 @@ async function runAuto(projectId: string, cut: StoryCut, job: StoryJob, sensitiv
   if (!work.segments.some(s => s.description.trim())) bad("The AI couldn't describe any scene, so it can't match your script. Try again.", 502);
 
   let castNote = "";
-  if (!work.cast.some(m => m.name.trim())) {
+  if (!work.cast.some(m => m.name.trim()) && !mixing(work)) { // when mixing videos, a fixed cast would pull every pick back to one film
     progress("Step 3 of 4 · Casting your characters…");
-    const c = await castFor(work);
+    const c = await castFor(work, m => progress(`Step 3 of 4 · ${m}`));
     work.cast = c.cast;
     await patch(projectId, job.id, { cast: c.cast });
     castNote = ` Cast: ${c.cast.map(m => `${m.name} = ${m.look || "not in the footage"}`).join("; ")}.`;
   }
 
   progress("Step 4 of 4 · Picking a clip for each line of your script…");
-  const m = await matchFor(work);
+  const m = await matchFor(work, msg => progress(`Step 4 of 4 · ${msg}`));
   await patch(projectId, job.id, { status: "succeeded", lines: m.lines, finishedAt: nowIso(), notes: `${work.segments.length} scenes watched. ${m.notes}${castNote}` });
 }
 
