@@ -5,9 +5,10 @@ import { useEffect, useState } from "react";
 import { assetById, fileUrl, makeStoryCut, nowIso } from "@/lib/projectModel";
 import { aiApi } from "@/lib/client/ai";
 import { dropUnusedStock, useStoryCuts } from "@/lib/client/useStoryCuts";
-import { STORY_STYLES, countWords, formatTime, segmentLength, styleById, wordBudget, type StoryJobView } from "@/lib/storyCut";
+import { STORY_STYLES, countWords, formatTime, linePiece, segmentLength, speakSeconds, styleById, wordBudget, type StoryJobView } from "@/lib/storyCut";
 import { newId } from "@/lib/projectModel";
 import type { ID, StoryCut, StoryCutLine, StoryCutSegment } from "@/lib/types";
+import { Dropdown } from "./Dropdown";
 import { EmptyState, Modal, UploadButton, useStudio } from "./studio";
 
 const SENSITIVITY = [
@@ -15,7 +16,7 @@ const SENSITIVITY = [
   { value: 0.3, label: "Normal" },
   { value: 0.45, label: "More scenes" },
 ];
-const KIND_LABEL: Record<StoryJobView["kind"], string> = { detect: "Scene detection", describe: "Scene descriptions", render: "Render", auto: "Find clips for my script", stock: "Find stock clips" };
+const KIND_LABEL: Record<StoryJobView["kind"], string> = { detect: "Scene detection", describe: "Scene descriptions", render: "Render", auto: "Find clips for my script", stock: "Find stock clips", check: "Check clips" };
 
 /** "83", "1:23" or "1:02:03" → seconds; "" → null. */
 function parseTime(text: string): number | null {
@@ -27,6 +28,8 @@ function parseTime(text: string): number | null {
 }
 
 const frameUrl = (projectId: ID, name: string) => `/api/projects/${projectId}/storycuts/frames/${name}`;
+const FIT_LABEL = { good: "good fit", loose: "loose fit", poor: "poor fit" } as const;
+const NUDGE = 0.5; // seconds per "earlier / later" click
 
 export function StoryCutStudio() {
   const { ws, project, notify, ai } = useStudio();
@@ -75,7 +78,7 @@ export function StoryCutStudio() {
     setSelectedId(null);
   }
 
-  async function start(kind: StoryJobView["kind"], extra: { overwrite?: boolean; sensitivity?: number; rescan?: boolean } = {}) {
+  async function start(kind: StoryJobView["kind"], extra: { overwrite?: boolean; sensitivity?: number; rescan?: boolean; resume?: boolean } = {}) {
     if (!cut) return;
     setBusy(kind);
     try {
@@ -94,6 +97,30 @@ export function StoryCutStudio() {
     if (cut.lines.length && !confirm("Find clips again? This replaces the current lines and clip choices (your script text stays).")) return;
     void start("auto", { sensitivity, rescan });
     setRescan(false);
+  }
+
+  /** A failed job can be resumed when it's the latest of its kind for this story and nothing else is running on it. */
+  function canResume(j: StoryJobView): boolean {
+    return j.status === "failed" && j.kind !== "stock" && cutJobs.find(x => x.kind === j.kind)?.id === j.id
+      && !cutJobs.some(x => x.status === "running" && x.kind !== "render");
+  }
+
+  /**
+   * Continue where a failed job stopped. Its partial results are already in the project (scenes, descriptions,
+   * lines, checked clips), and each step skips work that's done: describing skips described scenes, "Find clips"
+   * no longer rescans, checking skips checked lines, and rendering reuses recorded voice lines.
+   */
+  function resume(j: StoryJobView) {
+    if (j.kind === "auto") void (j.lines?.length ? start("check", { resume: true }) : start("auto", { sensitivity }));
+    else if (j.kind === "check") void start("check", { resume: true });
+    else if (j.kind === "describe") void start("describe", { overwrite: false });
+    else if (j.kind === "detect") void start("detect", { sensitivity });
+    else if (j.kind === "render") void start("render");
+  }
+
+  function renderResume(j: StoryJobView) {
+    if (!canResume(j)) return null;
+    return <button className="button secondary" disabled={!!busy} onClick={() => resume(j)} title="Continue where it stopped; finished work is kept">Resume</button>;
   }
 
   function detect() {
@@ -287,40 +314,47 @@ export function StoryCutStudio() {
     const seg = c.segments.find(s => s.id === l.sceneId);
     const segIndex = seg ? c.segments.indexOf(seg) : -1;
     const words = countWords(l.text);
-    const speak = words / (2.4 * c.voice.speed) + 0.5;
+    const speak = speakSeconds(l.text, c.voice.speed);
     const len = seg ? segmentLength(seg) : 0;
-    const fit = !seg || !words ? "" : speak <= len ? " ok" : speak <= len * 1.5 ? " warn" : " over";
+    const piece = linePiece(l.offset, len, l.text, c.voice.speed);
+    const fit = !seg || !words ? "" : !piece.overruns ? " ok" : speak <= len * 1.5 ? " warn" : " over";
+    const nudge = (d: number) => editLine(l.id, x => { x.offset = linePiece(piece.from + d, len, x.text, c.voice.speed).from; }, "Moved a clip's start");
     const alternatives = l.options.filter(o => o !== l.sceneId).map(o => c.segments.find(s => s.id === o)).filter((s): s is StoryCutSegment => !!s);
     return (
       <div key={l.id} className="scene-cut">
         <div className="scene-cut-media">
           {seg && previewId === l.id
-            ? <video className="scene-cut-video" src={`${fileUrl(project.id, seg.assetId)}#t=${seg.start.toFixed(2)},${seg.end.toFixed(2)}`} controls autoPlay preload="metadata" />
-            : <button type="button" className="scene-cut-frames" onClick={() => (seg ? setPreviewId(l.id) : setPickLineId(l.id))} title={seg ? "Play this scene" : "Choose a scene"}>{renderThumb(seg)}</button>}
-          <small className="muted">{seg ? `Scene ${segIndex + 1} · ${len.toFixed(1)} s` : "No scene chosen"}</small>
+            ? <video key={`${seg.id}-${piece.from}-${piece.to}`} className="scene-cut-video" src={`${fileUrl(project.id, seg.assetId)}#t=${(seg.start + piece.from).toFixed(2)},${(seg.start + piece.to).toFixed(2)}`} controls autoPlay preload="metadata" />
+            : <button type="button" className="scene-cut-frames" onClick={() => (seg ? setPreviewId(l.id) : setPickLineId(l.id))} title={seg ? "Play the part used for this line" : "Choose a scene"}>{renderThumb(seg)}</button>}
+          <small className="muted">{seg ? `Scene ${segIndex + 1} · uses ${piece.from.toFixed(1)}–${piece.to.toFixed(1)} s of ${len.toFixed(1)} s` : "No scene chosen"}
+            {l.fit && <span className={`fit-badge ${l.fit}`} title="The AI's verdict after looking at this clip's frames">{FIT_LABEL[l.fit]}</span>}</small>
           {seg?.description && <small className="muted scene-desc" title={seg.description}>{seg.description}</small>}
           <div className="row-actions">
             <button className="tiny-button" onClick={() => setPickLineId(l.id)}>Choose scene…</button>
+            {seg && <>
+              <button className="tiny-button" disabled={piece.from <= 0} onClick={() => nudge(-NUDGE)} title={`Start ${NUDGE} s earlier in the scene`}>◀ Earlier</button>
+              <button className="tiny-button" disabled={piece.from >= linePiece(len, len, l.text, c.voice.speed).from} onClick={() => nudge(NUDGE)} title={`Start ${NUDGE} s later in the scene`}>Later ▶</button>
+            </>}
             {previewId === l.id && <button className="tiny-button" onClick={() => setPreviewId(null)}>Frames</button>}
           </div>
           {alternatives.length > 0 && (
             <div className="alt-row" aria-label="Other suggestions">
               {alternatives.map(a => (
                 <button key={a.id} type="button" className="alt-thumb" title={`Use scene ${c.segments.indexOf(a) + 1}: ${a.description}`}
-                  onClick={() => editLine(l.id, x => { x.sceneId = a.id; }, "Changed a line's scene")}>{renderThumb(a)}</button>
+                  onClick={() => editLine(l.id, x => { x.sceneId = a.id; x.offset = 0; x.fit = ""; }, "Changed a line's scene")}>{renderThumb(a)}</button>
               ))}
             </div>
           )}
         </div>
         <div className="scene-cut-text">
           <label>
-            <span className="label-row">LINE {i + 1}<span className={`budget${fit}`} title="Speaking time vs. scene length. The video follows the voice; a long line runs on past the scene's cut.">{speak.toFixed(1)} s{seg ? ` / ${len.toFixed(1)} s scene` : ""}</span></span>
+            <span className="label-row">LINE {i + 1}<span className={`budget${fit}`} title="Speaking time vs. scene length. The video follows the voice; a line longer than its scene runs on past the scene's cut.">{speak.toFixed(1)} s{seg ? ` / ${len.toFixed(1)} s scene` : ""}</span></span>
             <textarea className="field textarea-small" value={l.text} onChange={e => editLine(l.id, x => { x.text = e.target.value; })} />
           </label>
           <div className="row-actions">
             <button className="tiny-button" disabled={i === 0} onClick={() => moveLine(i, -1)} aria-label="Move up">↑</button>
             <button className="tiny-button" disabled={i === c.lines.length - 1} onClick={() => moveLine(i, 1)} aria-label="Move down">↓</button>
-            <button className="tiny-button" onClick={() => editCut(x => { x.lines.splice(i + 1, 0, { id: newId(), text: "", sceneId: null, options: [], query: "", stock: [] }); }, "Added a script line")}>+ Line below</button>
+            <button className="tiny-button" onClick={() => editCut(x => { x.lines.splice(i + 1, 0, { id: newId(), text: "", sceneId: null, options: [], offset: 0, fit: "", query: "", stock: [] }); }, "Added a script line")}>+ Line below</button>
             <button className="tiny-button danger-text" onClick={() => editCut(x => { x.lines = x.lines.filter(y => y.id !== l.id); }, "Removed a script line")}>Remove</button>
           </div>
         </div>
@@ -378,7 +412,7 @@ export function StoryCutStudio() {
           <div className="row-actions">
             <button className="tiny-button" disabled={i === 0} onClick={() => moveLine(i, -1)} aria-label="Move up">↑</button>
             <button className="tiny-button" disabled={i === c.lines.length - 1} onClick={() => moveLine(i, 1)} aria-label="Move down">↓</button>
-            <button className="tiny-button" onClick={() => editCut(x => { x.lines.splice(i + 1, 0, { id: newId(), text: "", sceneId: null, options: [], query: "", stock: [] }); }, "Added a script line")}>+ Line below</button>
+            <button className="tiny-button" onClick={() => editCut(x => { x.lines.splice(i + 1, 0, { id: newId(), text: "", sceneId: null, options: [], offset: 0, fit: "", query: "", stock: [] }); }, "Added a script line")}>+ Line below</button>
             <button className="tiny-button danger-text" onClick={() => editCut(x => { x.lines = x.lines.filter(y => y.id !== l.id); }, "Removed a script line")}>Remove</button>
           </div>
         </div>
@@ -408,7 +442,7 @@ export function StoryCutStudio() {
         <div className="scene-picker">
           {c.segments.map((s, i) => (
             <button key={s.id} type="button" className={`scene-pick${s.id === line.sceneId ? " selected" : ""}`}
-              onClick={() => { editLine(line.id, x => { x.sceneId = s.id; }, "Changed a line's scene"); setPickLineId(null); }}>
+              onClick={() => { editLine(line.id, x => { if (x.sceneId !== s.id) { x.sceneId = s.id; x.offset = 0; x.fit = ""; } }, "Changed a line's scene"); setPickLineId(null); }}>
               {renderThumb(s)}
               <small><b>Scene {i + 1}</b> · {segmentLength(s).toFixed(1)} s{usedElsewhere.has(s.id) ? " · used" : ""}</small>
               <small className="muted">{s.description || "No description"}</small>
@@ -430,6 +464,7 @@ export function StoryCutStudio() {
 
   /** Live status line for a running job: elapsed time + current step. */
   function renderLive(j: StoryJobView | undefined) {
+    if (j?.status === "failed") return <div className="job-failed"><p className="small error-text">Last run failed after {elapsed(j)}: {j.error}</p>{renderResume(j)}</div>;
     if (j?.status !== "running") return null;
     return <p className="small find-progress"><span className="elapsed">⏱ {elapsed(j)}</span> {j.progress ?? "Starting…"}</p>;
   }
@@ -447,6 +482,7 @@ export function StoryCutStudio() {
         {j.status === "running" && <p className="small">{j.progress ?? "Working…"}</p>}
         {j.error && <p className="error-text small">{j.error}</p>}
         {j.notes && j.status !== "running" && <p className="muted small">{j.notes}</p>}
+        {renderResume(j)}
       </div>
     );
   }
@@ -511,9 +547,8 @@ export function StoryCutStudio() {
       {tools && !tools.ok && <div className="setup-note"><strong>One-time setup:</strong><p>{tools.error}</p></div>}
 
       <div className="panel story-cut-bar">
-        <select className="field" aria-label="Story cut" value={cut.id} onChange={e => setSelectedId(e.target.value)}>
-          {project.storyCuts.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
-        </select>
+        <Dropdown ariaLabel="Story cut" value={cut.id} onChange={v => setSelectedId(v)}
+          options={project.storyCuts.map(c => ({ value: c.id, label: c.title }))} />
         <input className="field" aria-label="Title" value={cut.title} onChange={e => editCut(c => { c.title = e.target.value; }, "Renamed a story cut")} />
         <button className="button secondary" onClick={createCut}>New</button>
         <button className="tiny-button danger-text" onClick={deleteCut}>Delete</button>
@@ -619,10 +654,8 @@ export function StoryCutStudio() {
           ))}
         </div>
         <div className="button-row">
-          <select className="field" aria-label="Add a video" value={addId} onChange={e => setAddId(e.target.value)}>
-            <option value="">{addable.length ? "Choose a video from the library…" : "No other videos in the library"}</option>
-            {addable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
+          <Dropdown ariaLabel="Add a video" value={addId} onChange={v => setAddId(v)}
+            options={[{ value: "", label: addable.length ? "Choose a video from the library…" : "No other videos in the library" }, ...addable.map(a => ({ value: a.id, label: a.name }))]} />
           <button className="button secondary" disabled={!addId} onClick={() => { editCut(c => { c.sources.push({ assetId: addId, start: null, end: null }); }, "Added footage to a story cut"); setAddId(""); }}>Add</button>
           <UploadButton label="Upload videos" accept="video/*" onFiles={files => ws.uploadFiles(files, (d, assets) => {
             const c = d.storyCuts.find(x => x.id === cut.id);
@@ -639,14 +672,13 @@ export function StoryCutStudio() {
               {running.has("auto") ? "Finding clips…" : cut.lines.length ? "Find clips again" : "Find clips for my script"}
             </button>
             {renderLive(autoJob)}
-            {!running.has("auto") && <small className="muted">The AI scans your film, watches every scene, casts your characters and picks a clip for each line. A 15-minute stretch of film takes about 5–15 minutes on this laptop.</small>}
+            {!running.has("auto") && <small className="muted">The AI scans your film, watches every scene, picks a clip for each line, then looks closely at each pick and starts it at the right moment. A 15-minute stretch of film takes about 5–15 minutes on this laptop.</small>}
           </div>
           <details className="advanced">
             <summary>Advanced</summary>
             <div className="button-row">
-              <select className="field" aria-label="Scene sensitivity" value={sensitivity} onChange={e => setSensitivity(Number(e.target.value))}>
-                {SENSITIVITY.map(x => <option key={x.value} value={x.value}>{x.label}</option>)}
-              </select>
+              <Dropdown ariaLabel="Scene sensitivity" value={String(sensitivity)} onChange={v => setSensitivity(Number(v))}
+                options={SENSITIVITY.map(x => ({ value: String(x.value), label: x.label }))} />
               {cut.segments.length > 0 && <label className="check inline"><input type="checkbox" checked={rescan} onChange={e => setRescan(e.target.checked)} /><span>Scan the film again (after changing FROM/TO)</span></label>}
             </div>
             {cut.segments.length > 0 && <>
@@ -668,7 +700,16 @@ export function StoryCutStudio() {
         {(cut.lines.length > 0 || cut.segments.length > 0) && (
           <div className="panel">
             <h3 className="step-title"><span className="step-num">3</span> Clips for your script <small className="muted">{cut.lines.length} lines · {linesWithScene.length} with a clip · about {formatTime(estVideo)} of video</small></h3>
-            {cut.lines.length > 0 && <p className="muted small">Click a picture to play the clip. Click a small thumbnail to swap in another suggestion, or “Choose scene…” to browse every scene.</p>}
+            {cut.lines.length > 0 && <p className="muted small">Click a picture to play exactly the part that goes into the video. ◀ Earlier / Later ▶ moves it within the scene. Click a small thumbnail to swap in another suggestion, or “Choose scene…” to browse every scene.</p>}
+            {linesWithScene.length > 0 && <div className="find-clips">
+              <div className="button-row">
+                <button className="button secondary" disabled={!!busy || running.has("check") || running.has("auto")} onClick={() => void start("check")}>
+                  {running.has("check") ? "Checking clips…" : "Check clips with AI"}
+                </button>
+              </div>
+              {renderLive(cutJobs.find(j => j.kind === "check"))}
+              {!running.has("check") && <small className="muted">The AI looks at frames from each line&apos;s clip and its alternatives, keeps the one that shows the line best, starts it at the right moment and marks weak matches. About 1–3 minutes for 30 lines.</small>}
+            </div>}
             {cut.lines.length > 0 && <div className="scene-cut-list">{cut.lines.map((l, i) => renderLine(l, i, cut))}</div>}
             <details className="scene-library">
               <summary>Scene library ({cut.segments.length} scenes): check and fix descriptions</summary>
@@ -700,10 +741,8 @@ export function StoryCutStudio() {
           ))}
         </div>
         <div className="button-row">
-          <select className="field" aria-label="Add a video" value={addId} onChange={e => setAddId(e.target.value)}>
-            <option value="">{addable.length ? "Choose a video from the library…" : "No other videos in the library"}</option>
-            {addable.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
+          <Dropdown ariaLabel="Add a video" value={addId} onChange={v => setAddId(v)}
+            options={[{ value: "", label: addable.length ? "Choose a video from the library…" : "No other videos in the library" }, ...addable.map(a => ({ value: a.id, label: a.name }))]} />
           <button className="button secondary" disabled={!addId} onClick={() => { editCut(c => { c.sources.push({ assetId: addId, start: null, end: null }); }, "Added footage to a story cut"); setAddId(""); }}>Add</button>
           <UploadButton label="Upload videos" accept="video/*" onFiles={files => ws.uploadFiles(files, (d, assets) => {
             const c = d.storyCuts.find(x => x.id === cut.id);
@@ -711,9 +750,8 @@ export function StoryCutStudio() {
           }, "Uploaded footage for a story cut")} />
         </div>
         <div className="button-row">
-          <select className="field" aria-label="Scene sensitivity" value={sensitivity} onChange={e => setSensitivity(Number(e.target.value))}>
-            {SENSITIVITY.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-          </select>
+          <Dropdown ariaLabel="Scene sensitivity" value={String(sensitivity)} onChange={v => setSensitivity(Number(v))}
+            options={SENSITIVITY.map(s => ({ value: String(s.value), label: s.label }))} />
           <button className="button primary" disabled={!cut.sources.length || !!busy || running.has("detect") || tools?.ok === false} onClick={detect}>
             {running.has("detect") ? "Finding scenes…" : cut.segments.length ? "Detect scenes again" : "Detect scenes"}
           </button>
@@ -736,9 +774,8 @@ export function StoryCutStudio() {
             <h3 className="step-title"><span className="step-num">3</span> Story</h3>
           <div className="form-grid">
             <label>STYLE
-              <select className="field" value={cut.style} onChange={e => editCut(c => { c.style = e.target.value; }, "Changed story cut style")}>
-                {STORY_STYLES.map(s => <option key={s.id} value={s.id}>{s.label} — {s.footage}</option>)}
-              </select>
+              <Dropdown value={cut.style} onChange={v => editCut(c => { c.style = v; }, "Changed story cut style")}
+                options={STORY_STYLES.map(s => ({ value: s.id, label: `${s.label} — ${s.footage}` }))} />
             </label>
             <label>YOUR DIRECTION (OPTIONAL)
               <textarea className="field textarea-small" value={cut.instructions} placeholder="e.g. The old man is the narrator's father. Set in Mumbai. End with forgiveness."
@@ -762,17 +799,14 @@ export function StoryCutStudio() {
           <h3 className="step-title"><span className="step-num">4</span> Voice &amp; video</h3>
           <div className="form-grid three">
             <label>VOICE ENGINE
-              <select className="field" value={voiceProvider?.id ?? ""} onChange={e => {
-                const p = audioProviders.find(x => x.id === e.target.value);
-                editCut(c => { c.voice = { providerId: e.target.value, voice: p?.caps.voices[0]?.id ?? "", speed: p?.caps.speed?.default ?? 1 }; }, "Changed story cut voice");
-              }}>
-                {audioProviders.map(p => <option key={p.id} value={p.id}>{p.label}{p.configured ? "" : " (not configured)"}</option>)}
-              </select>
+              <Dropdown value={voiceProvider?.id ?? ""} onChange={v => {
+                const p = audioProviders.find(x => x.id === v);
+                editCut(c => { c.voice = { providerId: v, voice: p?.caps.voices[0]?.id ?? "", speed: p?.caps.speed?.default ?? 1 }; }, "Changed story cut voice");
+              }} options={audioProviders.map(p => ({ value: p.id, label: `${p.label}${p.configured ? "" : " (not configured)"}` }))} />
             </label>
             <label>VOICE
-              <select className="field" value={cut.voice.voice} onChange={e => editCut(c => { c.voice.voice = e.target.value; }, "Changed story cut voice")}>
-                {(voiceCaps?.voices ?? []).map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
-              </select>
+              <Dropdown value={cut.voice.voice} onChange={val => editCut(c => { c.voice.voice = val; }, "Changed story cut voice")}
+                options={(voiceCaps?.voices ?? []).map(v => ({ value: v.id, label: v.label }))} />
             </label>
             {voiceCaps?.speed && (
               <label>SPEED {cut.voice.speed.toFixed(2)}×

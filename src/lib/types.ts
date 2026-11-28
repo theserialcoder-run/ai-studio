@@ -167,6 +167,8 @@ export interface StoryCutLine {
   text: string; // narration
   sceneId: ID | null; // chosen segment (from `segments`)
   options: ID[]; // script mode: AI-suggested alternative scenes, best first
+  offset: number; // script mode: seconds into the chosen scene where the clip starts
+  fit: "" | "good" | "loose" | "poor"; // script mode: the AI's check of the clip's frames ("" = not checked)
   query: string; // stock mode: what to search for
   stock: StockOption[]; // stock mode: found clips, best first
 }

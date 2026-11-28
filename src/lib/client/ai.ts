@@ -23,7 +23,7 @@ const post = (body: unknown, method = "POST"): RequestInit => ({ method, headers
 export const aiApi = {
   providers: () => call<ProvidersResponse>("/api/providers"),
   storyJobs: (pid: ID) => call<{ jobs: StoryJobView[]; tools: { ok: boolean; error?: string; stock?: string | null } }>(`/api/projects/${pid}/storycuts/jobs`),
-  startStoryJob: (pid: ID, body: { kind: StoryJob["kind"]; cutId: ID; overwrite?: boolean; sensitivity?: number; rescan?: boolean }) =>
+  startStoryJob: (pid: ID, body: { kind: StoryJob["kind"]; cutId: ID; overwrite?: boolean; sensitivity?: number; rescan?: boolean; resume?: boolean }) =>
     call<{ job: StoryJob }>(`/api/projects/${pid}/storycuts/jobs`, post(body)).then(d => d.job),
   writeStory: (pid: ID, body: { cutId: ID; style: string; instructions: string }) =>
     call<StoryDraft & { provider: string }>(`/api/projects/${pid}/storycuts/story`, post(body)),
@@ -43,8 +43,8 @@ export const aiApi = {
   createConversation: (pid: ID) => call<{ conversation: Conversation }>(`/api/projects/${pid}/conversations`, post({})).then(d => d.conversation),
   renameConversation: (pid: ID, cid: ID, title: string) => call(`/api/projects/${pid}/conversations/${cid}`, post({ title }, "PATCH")),
   deleteConversation: (pid: ID, cid: ID) => call(`/api/projects/${pid}/conversations/${cid}`, { method: "DELETE" }),
-  send: (pid: ID, cid: ID, message: string, focus: { scriptId?: ID | null; sceneId?: ID | null }) =>
-    call<{ conversation: Conversation; provider: string }>(`/api/projects/${pid}/conversations/${cid}/messages`, post({ message, focus })),
+  send: (pid: ID, cid: ID, message: string, focus: { scriptId?: ID | null; sceneId?: ID | null }, signal?: AbortSignal) =>
+    call<{ conversation: Conversation; provider: string }>(`/api/projects/${pid}/conversations/${cid}/messages`, { ...post({ message, focus }), signal }),
   assist: (pid: ID, task: string, instructions: string, focus: { scriptId?: ID | null; sceneId?: ID | null }) =>
     call<{ summary: string; proposals: Proposal[]; provider: string }>(`/api/projects/${pid}/assist`, post({ task, instructions, focus })),
 };

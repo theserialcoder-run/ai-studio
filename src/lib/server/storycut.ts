@@ -5,21 +5,22 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { nowIso } from "../projectModel";
-import { segmentLength, styleById, wordBudget, type StoryDraft, type StoryJob, type StoryJobKind, type StoryJobView } from "../storyCut";
+import { linePiece, segmentLength, speakSeconds, styleById, wordBudget, type StoryDraft, type StoryJob, type StoryJobKind, type StoryJobView } from "../storyCut";
 import type { ID, StoryCut, StoryCutLine, StoryCutSegment } from "../types";
 import { audioProvider, parseWav } from "./ai/audio";
 import { ProviderError } from "./ai/http";
 import { activeLlm, chat } from "./ai/llm";
 import { fetchStock, runStockSearch, searchStock, secondsFor, stockConfigured } from "./stock";
-import { detectScenes, extractFrame, mediaTools, probe, renderParts, type Probe, type RenderPart } from "./media";
+import { detectScenes, extractFrame, extractFramesEvery, mediaTools, probe, renderParts, type Probe, type RenderPart } from "./media";
+import { processState } from "./processState";
 import { findFile, projectCacheDir, readProject, readSideFile, saveGeneratedFileFromPath, StorageError, updateSideFile } from "./storage";
 
 const MAX_RECORDS = 40;
 const MAX_SCENES = 400;
 const DESCRIBE_BATCH = 10;
 
-const active = new Map<ID, string>(); // job id → progress message
-let chain: Promise<unknown> = Promise.resolve();
+const active = processState("storyJobs", () => new Map<ID, string>()); // job id → progress message
+const queue = processState("storyQueue", () => ({ chain: Promise.resolve() as Promise<unknown> })); // one job at a time
 
 const bad = (msg: string, status = 400): never => { throw new ProviderError(msg, status); };
 const framesDir = (projectId: string) => path.join(projectCacheDir(projectId), "frames");
@@ -37,7 +38,7 @@ export async function listStoryJobs(projectId: string): Promise<StoryJobView[]> 
   const list = await readSideFile<StoryJob[]>(projectId, "storycuts", []);
   const stale = list.filter(j => j.status === "running" && !active.has(j.id));
   if (stale.length) {
-    const msg = "Interrupted because the Wonderboy server restarted. Start it again.";
+    const msg = "Stopped because the Wonderboy server was closed or restarted. Press Resume to continue where it left off.";
     await updateSideFile<StoryJob[]>(projectId, "storycuts", [], cur => cur.map(j => (stale.some(s => s.id === j.id) ? { ...j, status: "failed", error: msg, finishedAt: nowIso() } : j)));
     for (const j of stale) Object.assign(j, { status: "failed", error: msg });
   }
@@ -52,9 +53,9 @@ async function loadCut(projectId: string, cutId: string): Promise<StoryCut> {
 }
 
 /** Validates and queues a background job. */
-export async function startStoryJob(projectId: string, body: { kind?: unknown; cutId?: unknown; overwrite?: unknown; sensitivity?: unknown; rescan?: unknown }): Promise<StoryJob> {
+export async function startStoryJob(projectId: string, body: { kind?: unknown; cutId?: unknown; overwrite?: unknown; sensitivity?: unknown; rescan?: unknown; resume?: unknown }): Promise<StoryJob> {
   const kind = body.kind as StoryJobKind;
-  if (!["detect", "describe", "render", "auto", "stock"].includes(kind)) bad("kind must be detect, describe, render, auto or stock.");
+  if (!["detect", "describe", "render", "auto", "stock", "check"].includes(kind)) bad("kind must be detect, describe, render, auto, stock or check.");
   const cut = await loadCut(projectId, String(body.cutId ?? ""));
   if (kind !== "describe" && kind !== "stock") { const t = await mediaTools(); if (!t.ok) bad(t.error!); }
   if (kind === "stock") {
@@ -65,6 +66,11 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
   if (kind === "auto") {
     if (!cut.script.trim()) bad("Paste your script first.");
     if (!activeLlm()) bad("Finding clips needs the AI. Set GEMINI_API_KEY in .env.local (free at aistudio.google.com), then restart Wonderboy.");
+  }
+  if (kind === "check") {
+    if (cut.mode !== "script") bad("Checking clips works on your own footage (script mode).");
+    if (!cut.lines.some(l => l.sceneId && l.text.trim())) bad("No line has a clip to check yet. Find clips for your script first.");
+    if (!activeLlm()) bad("Checking clips needs the AI. Set GEMINI_API_KEY in .env.local (free at aistudio.google.com), then restart Wonderboy.");
   }
   if (kind === "describe") {
     if (!cut.segments.some(s => s.frames.length)) bad("Detect scenes first.");
@@ -83,7 +89,7 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
   }
   const existing = (await readSideFile<StoryJob[]>(projectId, "storycuts", [])).find(j => j.status === "running" && j.cutId === cut.id && j.kind === kind && active.has(j.id));
   if (existing) bad("This step is already running for this story.", 409);
-  if (kind === "auto" || kind === "detect" || kind === "describe") {
+  if (kind === "auto" || kind === "detect" || kind === "describe" || kind === "check") {
     const busyCut = (await readSideFile<StoryJob[]>(projectId, "storycuts", [])).find(j => j.status === "running" && j.cutId === cut.id && j.kind !== "render" && active.has(j.id));
     if (busyCut) bad("Another step is still working on this story. Wait for it to finish.", 409);
   }
@@ -96,14 +102,16 @@ export async function startStoryJob(projectId: string, body: { kind?: unknown; c
   const sensitivity = typeof body.sensitivity === "number" ? Math.min(0.6, Math.max(0.1, body.sensitivity)) : 0.3;
   const overwrite = body.overwrite === true;
   const rescan = body.rescan === true;
+  const resume = body.resume === true;
 
-  chain = chain.then(async () => {
+  queue.chain = queue.chain.then(async () => {
     const progress = (m: string) => active.set(job.id, m);
     try {
       const fresh = await loadCut(projectId, cut.id).catch(() => cut);
       if (kind === "detect") await runDetect(projectId, fresh, job, sensitivity, progress);
       if (kind === "describe") await runDescribe(projectId, fresh, job, overwrite, progress);
       if (kind === "render") await runRender(projectId, fresh, job, progress);
+      if (kind === "check") await runCheck(projectId, fresh, job, resume, progress);
       if (kind === "auto") await runAuto(projectId, fresh, job, sensitivity, rescan, progress);
       if (kind === "stock") {
         const r = await runStockSearch(projectId, fresh, progress, part => patch(projectId, job.id, { lines: part.lines, segments: part.segments, assets: part.assets, notes: part.notes }));
@@ -129,18 +137,27 @@ async function runDetect(projectId: string, cut: StoryCut, job: StoryJob, sensit
 }
 
 /** Finds scenes in the cut's sources and saves keyframes. Deletes the cut's old keyframes. */
-async function detectSegments(projectId: string, cut: StoryCut, sensitivity: number, progress: (m: string) => void): Promise<StoryCutSegment[]> {
+async function detectSegments(projectId: string, cut: StoryCut, sensitivity: number, progress: (m: string) => void, totalSources = cut.sources.length): Promise<StoryCutSegment[]> {
   // Higher "sensitivity" in the UI = more cuts = lower ffmpeg scene threshold.
   const threshold = Math.round((0.7 - sensitivity) * 100) / 100;
   const found: (StoryCutSegment & { file: string })[] = [];
+  // Each video gets a fair share of the scene limit, so one busy video (a meme compilation) can't crowd out the rest.
+  const perVideo = Math.max(15, Math.floor(MAX_SCENES / Math.max(1, totalSources)));
+  const seen = new Set<string>();
   for (const [i, src] of cut.sources.entries()) {
     const f = await findFile(projectId, src.assetId);
     if (!f) bad("A footage file is missing from the project.");
     const pr = await probe(f!.filePath);
+    const st = await fs.stat(f!.filePath);
+    const same = `${st.size}:${src.start ?? ""}:${src.end ?? ""}`;
+    if (seen.has(same)) continue; // the same file added twice
+    seen.add(same);
     const start = Math.min(Math.max(0, src.start ?? 0), Math.max(0, pr.duration - 1));
     const end = src.end && src.end > start + 1 ? Math.min(src.end, pr.duration) : pr.duration;
     const label = cut.sources.length > 1 ? ` (video ${i + 1} of ${cut.sources.length})` : "";
-    const scenes = await detectScenes(f!.filePath, start, end, threshold, frac => progress(`Finding scenes${label}… ${Math.round(frac * 100)}%`));
+    let scenes = await detectScenes(f!.filePath, start, end, threshold, frac => progress(`Finding scenes${label}… ${Math.round(frac * 100)}%`));
+    // Too many: keep the longest ones (more usable under a voice line), in film order.
+    if (scenes.length > perVideo) scenes = [...scenes].sort((a, b) => (b.end - b.start) - (a.end - a.start)).slice(0, perVideo).sort((a, b) => a.start - b.start);
     for (const s of scenes) found.push({ id: randomUUID(), assetId: src.assetId, start: s.start, end: s.end, frames: [], description: "", narration: "", skip: false, file: f!.filePath });
     if (found.length > MAX_SCENES) bad(`Found more than ${MAX_SCENES} scenes. Set a shorter start/end range, or lower the sensitivity.`);
   }
@@ -356,6 +373,23 @@ export async function matchScript(projectId: string, body: { cutId?: unknown }):
   return matchFor(cut);
 }
 
+/**
+ * The model doesn't always answer with bare numbers: with "[video N]" labels in the list it may
+ * write "Scene 12", "12 [video 3]", "video 3, scene 12" or {"scene":12,"video":3}. Take the scene number.
+ */
+function sceneNumber(v: unknown): number {
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const m = v.match(/scene\s*#?\s*(\d+)/i) ?? v.replace(/\[?video\s*\d+\]?/gi, "").match(/\d+/);
+    return m ? Number(m[1] ?? m[0]) : NaN;
+  }
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return sceneNumber(o.scene ?? o.number ?? o.n ?? o.id ?? o.index);
+  }
+  return NaN;
+}
+
 async function matchFor(cut: StoryCut, progress?: (m: string) => void): Promise<{ lines: StoryCutLine[]; notes: string; provider: string }> {
   const lengths = cut.segments.map(segmentLength).sort((a, b) => a - b);
   const median = lengths[Math.floor(lengths.length / 2)] ?? 5;
@@ -371,7 +405,7 @@ async function matchFor(cut: StoryCut, progress?: (m: string) => void): Promise<
   const system = MATCH_SYSTEM.replace("MAX_WORDS", String(maxWords)) + (mix ? MIX_RULES.replace(/VIDEOS/g, String(videos)) : "");
   const r = await chat({ system, json: true, maxTokens: 16384, onRetry: progress, messages: [{ role: "user", content: prompt }] });
   const data = parseJsonObject(r.text);
-  const raw = (Array.isArray(data.lines) ? data.lines as { text?: unknown; scenes?: unknown }[] : [])
+  const raw = (Array.isArray(data.lines) ? data.lines as { text?: unknown; scenes?: unknown; scene?: unknown }[] : [])
     .filter(l => typeof l.text === "string" && l.text.trim()).slice(0, 500);
   if (!raw.length) bad("The AI returned no lines. Try again.", 502);
 
@@ -381,10 +415,13 @@ async function matchFor(cut: StoryCut, progress?: (m: string) => void): Promise<
   const cap = Math.ceil(raw.length / Math.max(1, videos)) + 1; // fair share per video, plus one
   let unmatched = 0;
   let reassigned = 0;
+  let noSuggestions = 0;
   let previous: ID | null = null;
 
   const lines: StoryCutLine[] = raw.map(l => {
-    let options = [...new Set((Array.isArray(l.scenes) ? l.scenes : []).map(n => cut.segments[Number(n) - 1]?.id).filter((x): x is ID => !!x))].slice(0, mix ? 5 : 3);
+    const picks = Array.isArray(l.scenes) ? l.scenes : l.scenes != null ? [l.scenes] : l.scene != null ? [l.scene] : [];
+    let options = [...new Set(picks.map(n => cut.segments[sceneNumber(n) - 1]?.id).filter((x): x is ID => !!x))].slice(0, mix ? 5 : 3);
+    if (!options.length) noSuggestions++;
     const free = options.filter(o => !used.has(o));
     let sceneId: ID | null = free[0] ?? null;
     if (mix) {
@@ -392,7 +429,8 @@ async function matchFor(cut: StoryCut, progress?: (m: string) => void): Promise<
       const score = (o: ID) => { const a = segById.get(o)!.assetId; return (perVideo.get(a) ?? 0) * 2 + (a === previous ? 1 : 0); };
       sceneId = [...free].sort((a, b) => score(a) - score(b))[0] ?? null;
       const least = Math.min(...[...new Set(cut.segments.map(s => s.assetId))].map(a => perVideo.get(a) ?? 0));
-      const overused = (id: ID | null) => { const n = id ? perVideo.get(segById.get(id)!.assetId) ?? 0 : Infinity; return n >= cap || n > least + 1; };
+      // A little slack (least + 2) so a good match wins over strict rotation; the cap still keeps it fair.
+      const overused = (id: ID | null) => { const n = id ? perVideo.get(segById.get(id)!.assetId) ?? 0 : Infinity; return n >= cap || n > least + 2; };
       if (overused(sceneId)) {
         // Every suggestion is from an overused video (or none is left): take an unused scene from the least-used video, at random.
         const counts = [...new Set(cut.segments.map(s => s.assetId))].map(a => ({ a, n: perVideo.get(a) ?? 0 })).sort((x, y) => x.n - y.n);
@@ -409,7 +447,7 @@ async function matchFor(cut: StoryCut, progress?: (m: string) => void): Promise<
       perVideo.set(a, (perVideo.get(a) ?? 0) + 1);
       previous = a;
     } else unmatched++;
-    return { id: randomUUID(), text: String(l.text).replace(/\s+/g, " ").trim().slice(0, 1000), sceneId, options, query: "", stock: [] };
+    return { id: randomUUID(), text: String(l.text).replace(/\s+/g, " ").trim().slice(0, 1000), sceneId, options, offset: 0, fit: "" as const, query: "", stock: [] };
   });
 
   const vid = videoNumbers(cut);
@@ -418,8 +456,122 @@ async function matchFor(cut: StoryCut, progress?: (m: string) => void): Promise<
     : "";
   return {
     lines, provider: r.provider,
-    notes: `${lines.length} lines, ${lines.length - unmatched} with a scene.${unmatched ? ` ${unmatched} need a scene: pick one yourself.` : ""}${spread}`,
+    notes: `${lines.length} lines, ${lines.length - unmatched} with a scene.${unmatched ? ` ${unmatched} need a scene: pick one yourself.` : ""}${noSuggestions ? ` The AI suggested no usable scene for ${noSuggestions} line${noSuggestions === 1 ? "" : "s"}.` : ""}${spread}`,
   };
+}
+
+/* ------------------------------------------- visual check (script mode) */
+
+const CHECK_BATCH = 3; // lines per AI call
+const CHECK_CANDIDATES = 3; // scenes looked at per line
+const CHECK_STEP = 1.5; // about one frame per this many seconds of scene
+const CHECK_MAX_FRAMES = 6;
+
+const CHECK_SYSTEM = `You are a film editor choosing the exact shot for each line of a narrated video.
+For each LINE you see still frames from up to ${CHECK_CANDIDATES} candidate clips, lettered A, B, C. Each frame is labelled with its time in seconds from the clip's start.
+For each line:
+- "pick": the candidate whose pictures best show what the line says or feels (the action, reaction, emotion, setting or mood). A literal match is best; a clear emotional match is fine.
+- "start": the time in seconds where the best moment begins. The narrator needs the stated number of seconds, so the piece shown runs from start to start + that length.
+- "fit": "good" = the pictures clearly show the line; "loose" = only the mood or idea fits; "poor" = none of the candidates fits.
+Judge only what is visible. Never identify real people, actors or films.
+Return JSON only: {"lines":[{"line":<number>,"pick":"A","start":<seconds>,"fit":"good"}]}`;
+
+/**
+ * Looks at real frames of each line's chosen scene and its alternatives (same video when mixing, so the
+ * spread stays even), lets the AI pick the best one and the second where the moment starts, and rates the fit.
+ * Keeps what was checked if the AI stops part-way.
+ */
+async function checkClips(projectId: string, cut: StoryCut, input: StoryCutLine[], progress: (m: string) => void, onBatch?: (lines: StoryCutLine[]) => Promise<void>, onlyUnchecked = false): Promise<{ lines: StoryCutLine[]; notes: string }> {
+  const lines = input.map(l => ({ ...l, options: [...l.options] }));
+  const segById = new Map(cut.segments.map(s => [s.id, s]));
+  const todo = lines.filter(l => l.sceneId && segById.has(l.sceneId) && l.text.trim() && (!onlyUnchecked || !l.fit));
+  if (!todo.length) bad("No line has a clip to check yet. Find clips for your script first.");
+  const mix = mixing(cut);
+  const taken = new Set(lines.map(l => l.sceneId).filter((x): x is ID => !!x));
+  const files = new Map<ID, string>();
+  const fileFor = async (assetId: ID) => {
+    if (!files.has(assetId)) {
+      const f = await findFile(projectId, assetId);
+      if (!f) bad("A footage file is missing from the project.");
+      files.set(assetId, f!.filePath);
+    }
+    return files.get(assetId)!;
+  };
+  const dir = path.join(projectCacheDir(projectId), "check", randomUUID());
+  await fs.mkdir(dir, { recursive: true });
+  const fits = { good: 0, loose: 0, poor: 0 };
+  let checked = 0, switched = 0, stopped = "";
+  try {
+    for (let b = 0; b * CHECK_BATCH < todo.length; b++) {
+      const batch = todo.slice(b * CHECK_BATCH, (b + 1) * CHECK_BATCH);
+      progress(`Looking closely at the clips for lines ${b * CHECK_BATCH + 1}–${b * CHECK_BATCH + batch.length} of ${todo.length}…`);
+      const images: { mimeType: string; data: string }[] = [];
+      const text: string[] = [];
+      const candidates: StoryCutSegment[][] = [];
+      for (const [k, l] of batch.entries()) {
+        const chosen = segById.get(l.sceneId!)!;
+        const others = l.options.map(o => segById.get(o))
+          .filter((s): s is StoryCutSegment => !!s && !taken.has(s.id) && (!mix || s.assetId === chosen.assetId));
+        const list = [chosen, ...others].slice(0, CHECK_CANDIDATES);
+        candidates.push(list);
+        text.push(`LINE ${k + 1} (the narrator needs ${Math.max(2, speakSeconds(l.text, cut.voice.speed)).toFixed(1)} s): "${l.text.trim()}"`);
+        for (const [c, s] of list.entries()) {
+          const len = segmentLength(s);
+          const count = Math.min(CHECK_MAX_FRAMES, Math.max(2, Math.round(len / CHECK_STEP)));
+          const frames = await extractFramesEvery(await fileFor(s.assetId), s.start, len, count, dir, `${b}-${k}-${c}`);
+          const first = images.length + 1;
+          for (const fr of frames) images.push({ mimeType: "image/jpeg", data: (await fs.readFile(fr.path)).toString("base64") });
+          text.push(`  ${String.fromCharCode(65 + c)} (clip ${len.toFixed(1)} s long): ${frames.map((fr, i) => `image ${first + i} at ${fr.time.toFixed(1)} s`).join(", ") || "no frames"}`);
+        }
+      }
+      const r = await chat({
+        system: CHECK_SYSTEM, json: true, maxTokens: 1024, onRetry: progress,
+        messages: [{ role: "user", content: `The images below are in order.\n\n${text.join("\n")}\n\nAnswer for lines 1–${batch.length}.`, images }],
+      });
+      const data = parseJsonObject(r.text);
+      for (const a of Array.isArray(data.lines) ? data.lines as { line?: unknown; pick?: unknown; start?: unknown; fit?: unknown }[] : []) {
+        const k = sceneNumber(a.line) - 1;
+        const l = batch[k];
+        if (!l) continue;
+        const letter = typeof a.pick === "string" ? a.pick.trim().toUpperCase().charCodeAt(0) - 65 : 0;
+        let s = candidates[k][letter] ?? candidates[k][0];
+        if (s.id !== l.sceneId && taken.has(s.id)) s = candidates[k][0]; // another line in this batch took it first
+        const start = Number(a.start);
+        if (s.id !== l.sceneId) {
+          taken.delete(l.sceneId!);
+          taken.add(s.id);
+          l.options = [...new Set([s.id, l.sceneId!, ...l.options])].slice(0, 5);
+          l.sceneId = s.id;
+          switched++;
+        }
+        l.offset = linePiece(isFinite(start) ? start : 0, segmentLength(s), l.text, cut.voice.speed).from;
+        l.fit = a.fit === "good" || a.fit === "loose" || a.fit === "poor" ? a.fit : "";
+        if (l.fit) fits[l.fit]++;
+        checked++;
+      }
+      await onBatch?.(lines);
+    }
+  } catch (e) {
+    if (!checked) throw e;
+    stopped = ` Stopped after ${checked} of ${todo.length} lines (${e instanceof Error ? e.message : String(e)}); run “Check clips” again to finish.`;
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+  return {
+    lines,
+    notes: `Looked at the frames of ${checked} clips: ${fits.good} fit well, ${fits.loose} loosely, ${fits.poor} poorly${fits.poor ? " (marked “poor fit”: choose another scene for those)" : ""}.`
+      + `${switched ? ` Switched ${switched} to a better suggestion.` : ""} Each clip now starts at its best moment.${stopped}`,
+  };
+}
+
+/** `resume`: only the lines not checked yet (after an interrupted run). */
+async function runCheck(projectId: string, cut: StoryCut, job: StoryJob, resume: boolean, progress: (m: string) => void) {
+  if (resume && cut.lines.every(l => l.fit || !l.sceneId || !l.text.trim())) {
+    await patch(projectId, job.id, { status: "succeeded", notes: "Every clip was already checked.", finishedAt: nowIso() });
+    return;
+  }
+  const r = await checkClips(projectId, cut, cut.lines, progress, l => patch(projectId, job.id, { lines: l }), resume);
+  await patch(projectId, job.id, { status: "succeeded", lines: r.lines, notes: r.notes, finishedAt: nowIso() });
 }
 
 /* ----------------------------------------------------------- stock mode */
@@ -451,36 +603,77 @@ export async function stockSearchLine(projectId: string, body: { cutId?: unknown
 
 /* ------------------------------------------------- one-button script flow */
 
+/**
+ * What a "Find clips" run must scan. Everything on the first run or when asked; otherwise only videos
+ * without scenes, ignoring a file added twice (it never gets scenes of its own, so it must not force a rescan).
+ */
+async function scanPlan(projectId: string, cut: StoryCut, rescan: boolean): Promise<{ all: boolean; missing: StoryCut["sources"]; dropped: StoryCutSegment[] }> {
+  if (rescan || !cut.segments.length) return { all: true, missing: [], dropped: [] };
+  const sourceIds = new Set(cut.sources.map(s => s.assetId));
+  const dropped = cut.segments.filter(s => !sourceIds.has(s.assetId));
+  const keyOf = async (src: StoryCut["sources"][number]) => {
+    const f = await findFile(projectId, src.assetId);
+    if (!f) bad("A footage file is missing from the project.");
+    return `${(await fs.stat(f!.filePath)).size}:${src.start ?? ""}:${src.end ?? ""}`;
+  };
+  const seen = new Set<string>();
+  for (const src of cut.sources) if (cut.segments.some(s => s.assetId === src.assetId)) seen.add(await keyOf(src));
+  const missing: StoryCut["sources"] = [];
+  for (const src of cut.sources) {
+    if (cut.segments.some(s => s.assetId === src.assetId)) continue;
+    const key = await keyOf(src);
+    if (!seen.has(key)) { seen.add(key); missing.push(src); }
+  }
+  return { all: false, missing, dropped };
+}
+
 /** Script mode in one go. Each step's result is saved on the job as it finishes, so a later failure keeps earlier work. */
 async function runAuto(projectId: string, cut: StoryCut, job: StoryJob, sensitivity: number, rescan: boolean, progress: (m: string) => void) {
-  const sourceIds = new Set(cut.sources.map(s => s.assetId));
-  const needDetect = rescan || !cut.segments.length
-    || cut.sources.some(src => !cut.segments.some(s => s.assetId === src.assetId))
-    || cut.segments.some(s => !sourceIds.has(s.assetId));
   const work: StoryCut = { ...cut, segments: cut.segments.map(s => ({ ...s })), cast: cut.cast.map(m => ({ ...m })) };
-
-  if (needDetect) {
-    work.segments = await detectSegments(projectId, cut, sensitivity, m => progress(`Step 1 of 4 · ${m}`));
+  const plan = await scanPlan(projectId, cut, rescan);
+  if (plan.all) {
+    work.segments = await detectSegments(projectId, cut, sensitivity, m => progress(`Step 1 of 5 · ${m}`));
+    await patch(projectId, job.id, { segments: work.segments });
+  } else if (plan.missing.length || plan.dropped.length) {
+    // Keep the scenes (and descriptions) already found; scan only videos added since, and drop removed ones.
+    const added = plan.missing.length
+      ? await detectSegments(projectId, { ...cut, sources: plan.missing, segments: [] }, sensitivity, m => progress(`Step 1 of 5 · New video: ${m}`), cut.sources.length)
+      : [];
+    for (const s of plan.dropped) for (const fr of s.frames) { const p = framePath(projectId, fr); if (p) await fs.rm(p, { force: true }); }
+    const dropped = new Set(plan.dropped.map(s => s.id));
+    work.segments = [...work.segments.filter(s => !dropped.has(s.id)), ...added];
     await patch(projectId, job.id, { segments: work.segments });
   }
 
-  const d = await describeSegments(projectId, work.segments, false, m => progress(`Step 2 of 4 · Watching the film: ${m.replace(/^Looking at /, "")}`),
+  const d = await describeSegments(projectId, work.segments, false, m => progress(`Step 2 of 5 · Watching the film: ${m.replace(/^Looking at /, "")}`),
     desc => patch(projectId, job.id, { descriptions: desc }));
   for (const s of work.segments) if (d.descriptions[s.id]) s.description = d.descriptions[s.id];
   if (!work.segments.some(s => s.description.trim())) bad("The AI couldn't describe any scene, so it can't match your script. Try again.", 502);
 
   let castNote = "";
   if (!work.cast.some(m => m.name.trim()) && !mixing(work)) { // when mixing videos, a fixed cast would pull every pick back to one film
-    progress("Step 3 of 4 · Casting your characters…");
-    const c = await castFor(work, m => progress(`Step 3 of 4 · ${m}`));
+    progress("Step 3 of 5 · Casting your characters…");
+    const c = await castFor(work, m => progress(`Step 3 of 5 · ${m}`));
     work.cast = c.cast;
     await patch(projectId, job.id, { cast: c.cast });
     castNote = ` Cast: ${c.cast.map(m => `${m.name} = ${m.look || "not in the footage"}`).join("; ")}.`;
   }
 
-  progress("Step 4 of 4 · Picking a clip for each line of your script…");
-  const m = await matchFor(work, msg => progress(`Step 4 of 4 · ${msg}`));
-  await patch(projectId, job.id, { status: "succeeded", lines: m.lines, finishedAt: nowIso(), notes: `${work.segments.length} scenes watched. ${m.notes}${castNote}` });
+  progress("Step 4 of 5 · Picking a clip for each line of your script…");
+  const m = await matchFor(work, msg => progress(`Step 4 of 5 · ${msg}`));
+  const matched = `${work.segments.length} scenes watched. ${m.notes}${castNote}`;
+  await patch(projectId, job.id, { lines: m.lines, notes: matched });
+
+  // Step 5: look at the real frames of each pick and pin the moment. If it fails, the matched lines still stand.
+  let lines = m.lines, checkNote = "";
+  try {
+    const c = await checkClips(projectId, work, m.lines, msg => progress(`Step 5 of 5 · ${msg}`), l => patch(projectId, job.id, { lines: l }));
+    lines = c.lines;
+    checkNote = ` ${c.notes}`;
+  } catch (e) {
+    checkNote = ` The close look at each clip didn't finish (${e instanceof Error ? e.message : String(e)}); press “Check clips” to try again.`;
+  }
+  await patch(projectId, job.id, { status: "succeeded", lines, finishedAt: nowIso(), notes: `${matched}${checkNote}` });
 }
 
 /* ---------------------------------------------------------------- render */
@@ -495,7 +688,9 @@ function clipsFor(cut: StoryCut): Clip[] {
     const byId = new Map(cut.segments.map(s => [s.id, s]));
     return cut.lines.flatMap(l => {
       const s = l.sceneId ? byId.get(l.sceneId) : undefined;
-      return s ? [{ key: l.id, assetId: s.assetId, start: s.start, sceneLength: segmentLength(s), narration: l.text.trim(), fitToVoice: true }] : [];
+      if (!s) return [];
+      const from = linePiece(l.offset, segmentLength(s), l.text, cut.voice.speed).from; // start at the line's moment in the scene
+      return [{ key: l.id, assetId: s.assetId, start: s.start + from, sceneLength: segmentLength(s) - from, narration: l.text.trim(), fitToVoice: true }];
     });
   }
   return cut.segments.filter(s => !s.skip).map(s => ({ key: s.id, assetId: s.assetId, start: s.start, sceneLength: segmentLength(s), narration: s.narration.trim(), fitToVoice: false }));

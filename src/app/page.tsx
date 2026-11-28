@@ -16,6 +16,7 @@ import { SettingsView, exportProjectJson } from "@/components/SettingsView";
 import { ShotPlanner } from "@/components/ShotPlanner";
 import { StoryCutStudio } from "@/components/StoryCutStudio";
 import { VoiceStudio } from "@/components/VoiceStudio";
+import { Dropdown } from "@/components/Dropdown";
 import { StudioContext, TABS, type StudioCtx, type Tab } from "@/components/studio";
 
 const ICONS: Record<Tab, string> = {
@@ -58,13 +59,13 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">W</span><div><b>WONDERBOY</b><small>AI FILM STUDIO</small></div></div>
         <div className="workspace-label">PROJECT</div>
-        <div className="project-switcher">
-          <span className="dot" />
-          <select aria-label="Switch project" value={project?.id ?? ""} onChange={e => void switchProject(e.target.value)} disabled={ws.status !== "ready"}>
-            {!project && <option value="">No project open</option>}
-            {ws.projects.map(p => <option key={p.id} value={p.id}>{p.id === project?.id ? project.name || "Untitled film" : p.name}</option>)}
-          </select>
-        </div>
+        <Dropdown className="project-switcher" ariaLabel="Switch project" value={project?.id ?? ""} placeholder="No project open"
+          leading={<span className="dot" />} disabled={ws.status !== "ready"} onChange={id => void switchProject(id)}
+          options={ws.projects.map(p => ({
+            value: p.id,
+            label: (p.id === project?.id ? project.name : p.name) || "Untitled film",
+            hint: `${p.counts.scenes} scene${p.counts.scenes === 1 ? "" : "s"} · ${p.counts.shots} shot${p.counts.shots === 1 ? "" : "s"} · ${p.counts.assets} file${p.counts.assets === 1 ? "" : "s"}`,
+          }))} />
         <nav>
           {TABS.map(n => (
             <button key={n} className={view === n ? "nav-item active" : "nav-item"} onClick={() => setTab(n)} disabled={!project && n !== "Projects"}>

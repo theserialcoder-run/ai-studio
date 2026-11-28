@@ -247,6 +247,8 @@ export function normalizeProject(raw: unknown): Project {
         id: id(l.id), text: str(l.text),
         sceneId: segIds.has(str(l.sceneId)) ? str(l.sceneId) : null,
         options: strArr(l.options).filter(o => segIds.has(o)).slice(0, 5),
+        offset: Math.min(600, Math.max(0, num(l.offset, 0))),
+        fit: l.fit === "good" || l.fit === "loose" || l.fit === "poor" ? l.fit : "" as const,
         query: str(l.query).slice(0, 200),
         stock: arr(l.stock).map(o => ({
           id: str(o.id), kind: o.kind === "photo" ? "photo" as const : "video" as const,
@@ -428,7 +430,7 @@ export function removeAsset(p: Project, assetId: ID) {
     c.segments = c.segments.filter(s => s.assetId !== assetId);
     const segIds = new Set(c.segments.map(s => s.id));
     for (const l of c.lines) {
-      if (l.sceneId && !segIds.has(l.sceneId)) l.sceneId = null;
+      if (l.sceneId && !segIds.has(l.sceneId)) { l.sceneId = null; l.offset = 0; l.fit = ""; }
       l.options = l.options.filter(o => segIds.has(o));
     }
     c.outputAssetIds = c.outputAssetIds.filter(a => a !== assetId);

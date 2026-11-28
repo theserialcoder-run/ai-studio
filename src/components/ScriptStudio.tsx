@@ -4,6 +4,7 @@ import {
   makeScene, makeScript, moveWithinGroup, parseScenesFromScreenplay, removeScene, removeScript, sceneNumber, scenesOf, shotsOf,
 } from "@/lib/projectModel";
 import type { ID, Project, Scene } from "@/lib/types";
+import { Dropdown } from "./Dropdown";
 import { ScriptAssistant } from "./ScriptAssistant";
 import { EmptyState, RowActions, TextField, useStudio } from "./studio";
 
@@ -155,10 +156,8 @@ function SceneRow({ project, scene, open, onToggle, onPlanShots }: { project: Pr
                   })}</div>}
             </div>
             <label>LOCATION
-              <select className="field" value={scene.locationId ?? ""} onChange={e => edit({ locationId: e.target.value || null })}>
-                <option value="">— None —</option>
-                {project.locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-              </select>
+              <Dropdown value={scene.locationId ?? ""} onChange={v => edit({ locationId: v || null })}
+                options={[{ value: "", label: "— None —" }, ...project.locations.map(l => ({ value: l.id, label: l.name }))]} />
             </label>
           </div>
           <div className="button-row"><button className="button secondary" onClick={onPlanShots}>Plan shots for this scene ↗</button></div>

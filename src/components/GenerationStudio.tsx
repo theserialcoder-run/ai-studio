@@ -7,6 +7,7 @@ import type { ImageProviderInfo, ReferenceInput, VideoProviderInfo } from "@/lib
 import { billingLabel } from "@/lib/ai/types";
 import type { Asset, ID } from "@/lib/types";
 import { ContinuityPicker, type ContinuityValue } from "./ContinuityPicker";
+import { Dropdown, type DropdownOption } from "./Dropdown";
 import { AssetPreview, useStudio } from "./studio";
 
 type Mode = "image" | "video";
@@ -158,16 +159,15 @@ export function GenerationStudio({ mode }: { mode: Mode }) {
     notify("Settings loaded from that generation. Review and press Generate to run it again.");
   }
 
-  const shotOptions = (
-    <>
-      <option value="">— No shot: choose references manually —</option>
-      {project.scenes.map(sc => {
-        const list = project.shots.filter(s => s.sceneId === sc.id);
-        return list.length ? <optgroup key={sc.id} label={sceneLabel(project, sc)}>{list.map(s => <option key={s.id} value={s.id}>Shot {shotNumber(project, s)}{s.title ? ` · ${s.title}` : ""}</option>)}</optgroup> : null;
-      })}
-      {project.shots.some(s => !s.sceneId) && <optgroup label="Unassigned">{project.shots.filter(s => !s.sceneId).map(s => <option key={s.id} value={s.id}>Shot {shotNumber(project, s)}{s.title ? ` · ${s.title}` : ""}</option>)}</optgroup>}
-    </>
-  );
+  const shotLabel = (s: (typeof project.shots)[number]) => `Shot ${shotNumber(project, s)}${s.title ? ` · ${s.title}` : ""}`;
+  const shotOptions: DropdownOption[] = [
+    { value: "", label: "— No shot: choose references manually —" },
+    ...project.scenes.flatMap(sc => {
+      const group = sceneLabel(project, sc);
+      return project.shots.filter(s => s.sceneId === sc.id).map(s => ({ value: s.id, label: shotLabel(s), group }));
+    }),
+    ...project.shots.filter(s => !s.sceneId).map(s => ({ value: s.id, label: shotLabel(s), group: "Unassigned" })),
+  ];
 
   return (
     <div className="content">
@@ -185,9 +185,8 @@ export function GenerationStudio({ mode }: { mode: Mode }) {
       <div className="generator-layout">
         <div className="panel">
           <label>PROVIDER / MODEL
-            <select className="field" value={providerId} onChange={e => { setProviderId(e.target.value); setSelectedRefs(null); }}>
-              {providers.map(p => <option key={p.id} value={p.id}>{p.label} — {billingLabel(p.billing)}{p.configured ? "" : " (not configured)"}</option>)}
-            </select>
+            <Dropdown value={providerId} onChange={v => { setProviderId(v); setSelectedRefs(null); }}
+              options={providers.map(p => ({ value: p.id, label: `${p.label} — ${billingLabel(p.billing)}${p.configured ? "" : " (not configured)"}` }))} />
           </label>
           {provider && (
             <div className={`provider-note${provider.kind === "image" && provider.caps.maxReferences === 0 ? " warn" : ""}`}>
@@ -199,7 +198,7 @@ export function GenerationStudio({ mode }: { mode: Mode }) {
           )}
 
           <label>SHOT
-            <select className="field" value={shotId} onChange={e => { setShotId(e.target.value); setSelectedRefs(null); setPrompt(""); }}>{shotOptions}</select>
+            <Dropdown value={shotId} onChange={v => { setShotId(v); setSelectedRefs(null); setPrompt(""); }} options={shotOptions} />
           </label>
           {!shot && <ContinuityPicker value={manual} onChange={patch => { setManual(m => ({ ...m, ...patch })); setSelectedRefs(null); }} />}
 
@@ -227,11 +226,11 @@ export function GenerationStudio({ mode }: { mode: Mode }) {
 
           {(isImage ? imageCaps?.imageToImage : videoCaps?.imageToVideo) && (
             <label>{isImage ? "SOURCE IMAGE (IMAGE-TO-IMAGE, OPTIONAL)" : "START FRAME (IMAGE-TO-VIDEO)"}
-              <select className="field" value={sourceId} onChange={e => setSourceId(e.target.value)}>
-                <option value="">{isImage ? "None — generate from text + references" : videoCaps?.textToVideo ? "None — text-to-video" : "— choose an image —"}</option>
-                {shotTakes.length > 0 && <optgroup label="This shot's generated takes">{shotTakes.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</optgroup>}
-                <optgroup label="All project images">{imageAssets.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</optgroup>
-              </select>
+              <Dropdown value={sourceId} onChange={v => setSourceId(v)} options={[
+                { value: "", label: isImage ? "None — generate from text + references" : videoCaps?.textToVideo ? "None — text-to-video" : "— choose an image —" },
+                ...shotTakes.map(a => ({ value: a.id, label: a.name, group: "This shot's generated takes" })),
+                ...imageAssets.map(a => ({ value: a.id, label: a.name, group: "All project images" })),
+              ]} />
             </label>
           )}
           {source && <div className="source-preview"><AssetPreview asset={source} /><button className="tiny-button" onClick={() => setSourceId("")}>Clear</button></div>}
@@ -247,17 +246,17 @@ export function GenerationStudio({ mode }: { mode: Mode }) {
 
           <div className="form-grid three">
             {imageCaps && <>
-              <label>ASPECT RATIO<select className="field" value={aspect} onChange={e => setAspect(e.target.value)}>{imageCaps.aspectRatios.map(r => <option key={r}>{r}</option>)}</select></label>
-              {imageCaps.sizes.length > 0 && <label>SIZE<select className="field" value={size} onChange={e => setSize(e.target.value)}>{imageCaps.sizes.map(r => <option key={r}>{r}</option>)}</select></label>}
-              <label>IMAGES<select className="field" value={count} onChange={e => setCount(Number(e.target.value))}>{[1, 2, 3, 4].map(n => <option key={n} value={n}>{n}</option>)}</select></label>
+              <label>ASPECT RATIO<Dropdown value={aspect} onChange={v => setAspect(v)} options={imageCaps.aspectRatios.map(r => ({ value: r, label: r }))} /></label>
+              {imageCaps.sizes.length > 0 && <label>SIZE<Dropdown value={size} onChange={v => setSize(v)} options={imageCaps.sizes.map(r => ({ value: r, label: r }))} /></label>}
+              <label>IMAGES<Dropdown value={String(count)} onChange={v => setCount(Number(v))} options={[1, 2, 3, 4].map(n => ({ value: String(n), label: String(n) }))} /></label>
               {imageCaps.steps && <label>STEPS<input className="field" type="number" min={imageCaps.steps.min} max={imageCaps.steps.max} placeholder={String(imageCaps.steps.default)} value={steps} onChange={e => setSteps(e.target.value === "" ? "" : Number(e.target.value))} /></label>}
               {imageCaps.seed && <label>SEED<input className="field" type="number" min={0} placeholder="random" value={seed} onChange={e => setSeed(e.target.value === "" ? "" : Math.max(0, Math.floor(Number(e.target.value))))} /></label>}
               {imageCaps.guidance && <label>GUIDANCE<input className="field" type="number" step={0.5} min={0} max={20} placeholder="default" value={guidance} onChange={e => setGuidance(e.target.value === "" ? "" : Number(e.target.value))} /></label>}
             </>}
             {videoCaps && <>
-              <label>DURATION<select className="field" value={duration} onChange={e => setDuration(Number(e.target.value))}>{videoCaps.durations.map(d => <option key={d} value={d}>{d}s</option>)}</select></label>
-              {videoCaps.aspectRatios.length > 0 && <label>ASPECT RATIO<select className="field" value={aspect} onChange={e => setAspect(e.target.value)}>{videoCaps.aspectRatios.map(r => <option key={r}>{r}</option>)}</select></label>}
-              {videoCaps.resolutions.length > 0 && <label>RESOLUTION<select className="field" value={resolution} onChange={e => setResolution(e.target.value)}>{videoCaps.resolutions.map(r => <option key={r}>{r}</option>)}</select></label>}
+              <label>DURATION<Dropdown value={String(duration)} onChange={v => setDuration(Number(v))} options={videoCaps.durations.map(d => ({ value: String(d), label: `${d}s` }))} /></label>
+              {videoCaps.aspectRatios.length > 0 && <label>ASPECT RATIO<Dropdown value={aspect} onChange={v => setAspect(v)} options={videoCaps.aspectRatios.map(r => ({ value: r, label: r }))} /></label>}
+              {videoCaps.resolutions.length > 0 && <label>RESOLUTION<Dropdown value={resolution} onChange={v => setResolution(v)} options={videoCaps.resolutions.map(r => ({ value: r, label: r }))} /></label>}
               {provider?.id === "fal" && sourceId && <label className="check inline"><input type="checkbox" checked={audio} onChange={e => setAudio(e.target.checked)} /><span>Generate audio</span></label>}
             </>}
           </div>

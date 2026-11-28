@@ -8,6 +8,8 @@ export interface LlmRequest {
   system: string; messages: LlmMessage[]; json?: boolean; maxTokens?: number;
   /** Called with a short status while waiting to retry a busy provider. */
   onRetry?: (message: string) => void;
+  /** Aborts the request and any retry wait (e.g. the user pressed Cancel). */
+  signal?: AbortSignal;
 }
 
 interface LlmProvider { info(): LlmProviderInfo; chat(req: LlmRequest, modelOverride?: string): Promise<string> }
@@ -25,12 +27,12 @@ const gemini: LlmProvider = {
     setup: "Create a key at aistudio.google.com → Get API key. Optional: GEMINI_TEXT_MODEL.",
     conditioning: "Text model.",
   }),
-  async chat({ system, messages, json, maxTokens }, modelOverride) {
+  async chat({ system, messages, json, maxTokens, signal }, modelOverride) {
     const key = env("GEMINI_API_KEY");
     if (!key) throw new ProviderError("Gemini is not configured. Add GEMINI_API_KEY to .env.local and restart.", 400);
     const model = modelOverride || gemini.info().model;
     const res = await fetchOrThrow("Gemini", `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: "POST",
+      method: "POST", signal,
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
@@ -65,11 +67,11 @@ const openaiCompatible: LlmProvider = {
     setup: "Set LLM_BASE_URL (…/v1), LLM_API_KEY and LLM_MODEL. Use LLM_PROVIDER=openai-compatible to prefer it over Gemini.",
     conditioning: "Text model.",
   }),
-  async chat({ system, messages, json, maxTokens }) {
+  async chat({ system, messages, json, maxTokens, signal }) {
     const i = openaiCompatible.info();
     if (!i.configured) throw new ProviderError("OpenAI-compatible endpoint is not configured (LLM_BASE_URL, LLM_API_KEY, LLM_MODEL).", 400);
     const res = await fetch(`${env("LLM_BASE_URL").replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
+      method: "POST", signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${env("LLM_API_KEY")}` },
       body: JSON.stringify({
         model: i.model,
@@ -106,7 +108,13 @@ export function activeLlm(): LlmProvider | null {
 // retried a few times. Text calls are free-tier/cheap; paid image/video jobs are never retried.
 const RETRY_WAITS_S = [5, 15, 40];
 const isTransient = (e: unknown) => e instanceof ProviderError && (e.status === 502 || e.status === 429);
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const cancelled = () => new ProviderError("Cancelled.", 499);
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) return reject(cancelled());
+  const t = setTimeout(() => { signal?.removeEventListener("abort", stop); resolve(); }, ms);
+  const stop = () => { clearTimeout(t); reject(cancelled()); };
+  signal?.addEventListener("abort", stop, { once: true });
+});
 
 export async function chat(req: LlmRequest): Promise<{ text: string; provider: string }> {
   const p = activeLlm();
@@ -117,11 +125,12 @@ export async function chat(req: LlmRequest): Promise<{ text: string; provider: s
     try {
       return { text: await p.chat(req), provider: `${info.label} · ${info.model}` };
     } catch (e) {
+      if (req.signal?.aborted) throw cancelled();
       lastError = e;
       if (!isTransient(e) || attempt === RETRY_WAITS_S.length) break;
       const wait = RETRY_WAITS_S[attempt];
       req.onRetry?.(`${info.label} is busy; trying again in ${wait} s (attempt ${attempt + 2} of ${RETRY_WAITS_S.length + 1})…`);
-      await sleep(wait * 1000);
+      await sleep(wait * 1000, req.signal);
     }
   }
   // Still busy: try Gemini's lighter model once (often has spare capacity). Keep the original error if it fails too.
@@ -130,7 +139,7 @@ export async function chat(req: LlmRequest): Promise<{ text: string; provider: s
     req.onRetry?.(`${info.model} is still busy; trying ${fallback}…`);
     try {
       return { text: await p.chat(req, fallback), provider: `${info.label} · ${fallback} (fallback)` };
-    } catch { /* report the original error */ }
+    } catch { if (req.signal?.aborted) throw cancelled(); /* else report the original error */ }
   }
   if (isTransient(lastError)) {
     throw new ProviderError(`${(lastError as Error).message} Wonderboy retried ${RETRY_WAITS_S.length} times. Wait a few minutes and press the button again: finished work is kept.`, (lastError as ProviderError).status);

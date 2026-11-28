@@ -3,6 +3,7 @@
 // - Gemini TTS runs in Google's cloud (free tier with unpublished daily limits, 100+ languages incl. Hindi).
 import path from "node:path";
 import type { AudioProviderInfo, AudioSettings, VoiceOption } from "../../ai/types";
+import { processState } from "../processState";
 import { dataRoot } from "../storage";
 import { env, errorDetail, explainHttpError, postJsonLong, ProviderError } from "./http";
 
@@ -92,17 +93,20 @@ type KokoroModel = {
   model?: { dispose?: () => Promise<unknown> };
 };
 
-let kokoro: Promise<KokoroModel> | null = null;
-let Splitter: (new () => { push(...t: string[]): void; close(): void }) | null = null;
-let kokoroBusy: Promise<unknown> = Promise.resolve();
-let unloadTimer: ReturnType<typeof setTimeout> | null = null;
+// Kept process-wide so a dev recompile can't load a second model (RAM) or lose the one-at-a-time queue.
+const K = processState("kokoro", () => ({
+  model: null as Promise<KokoroModel> | null,
+  Splitter: null as (new () => { push(...t: string[]): void; close(): void }) | null,
+  busy: Promise.resolve() as Promise<unknown>,
+  unloadTimer: null as ReturnType<typeof setTimeout> | null,
+}));
 const KOKORO_IDLE_UNLOAD_MS = 10 * 60_000;
 
 function loadKokoro(onProgress: (msg: string) => void): Promise<KokoroModel> {
-  if (!kokoro) {
-    kokoro = (async () => {
+  if (!K.model) {
+    K.model = (async () => {
       const [{ KokoroTTS, TextSplitterStream }, transformers] = await Promise.all([import("kokoro-js"), import("@huggingface/transformers")]);
-      Splitter = TextSplitterStream;
+      K.Splitter = TextSplitterStream;
       transformers.env.cacheDir = path.join(dataRoot(), "models"); // keep the ~90 MB model with app data, not node_modules
       // fp32 is ~2× faster than q8 on CPUs without VNNI (e.g. older Intel laptops); q8 uses half the RAM.
       const dtype = (env("KOKORO_DTYPE") || "fp32") as "fp32" | "fp16" | "q8" | "q4" | "q4f16";
@@ -118,16 +122,16 @@ function loadKokoro(onProgress: (msg: string) => void): Promise<KokoroModel> {
       });
       return tts as unknown as KokoroModel;
     })();
-    kokoro.catch(() => { kokoro = null; });
+    K.model.catch(() => { K.model = null; });
   }
-  return kokoro;
+  return K.model;
 }
 
 function scheduleKokoroUnload() {
-  if (unloadTimer) clearTimeout(unloadTimer);
-  unloadTimer = setTimeout(async () => {
-    const m = kokoro;
-    kokoro = null;
+  if (K.unloadTimer) clearTimeout(K.unloadTimer);
+  K.unloadTimer = setTimeout(async () => {
+    const m = K.model;
+    K.model = null;
     try { await (await m)?.model?.dispose?.(); } catch { /* ignore */ }
   }, KOKORO_IDLE_UNLOAD_MS);
 }
@@ -151,10 +155,11 @@ const kokoroProvider: AudioProvider = {
     if (!voice) throw new ProviderError("Unknown Kokoro voice.", 400);
     const speed = Math.min(2, Math.max(0.5, job.settings.speed ?? 1));
     // One local job at a time: protects RAM/CPU on small machines.
-    const run = kokoroBusy.then(async () => {
-      if (unloadTimer) clearTimeout(unloadTimer);
+    const run = K.busy.then(async () => {
+      if (K.unloadTimer) clearTimeout(K.unloadTimer);
       onProgress("Loading Kokoro…");
       const tts = await loadKokoro(onProgress);
+      const Splitter = K.Splitter;
       if (!Splitter) throw new ProviderError("Kokoro failed to initialise.", 500);
       const paragraphs = chunkText(job.text, 2000);
       const parts: Buffer[] = [];
@@ -178,7 +183,7 @@ const kokoroProvider: AudioProvider = {
       if (!parts.length) throw new ProviderError("Kokoro produced no audio — is the text empty?", 400);
       return encodeWav({ sampleRate, channels: 1, data: Buffer.concat(parts) });
     });
-    kokoroBusy = run.catch(() => {});
+    K.busy = run.catch(() => {});
     try {
       return { data: await run, mimeType: "audio/wav", notes: "" };
     } finally {

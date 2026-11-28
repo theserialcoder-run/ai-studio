@@ -86,7 +86,7 @@ export async function deleteConversation(projectId: string, id: string) {
 }
 
 /** Sends a message with history + live project context; persists both turns only on success. */
-export async function sendMessage(projectId: string, conversationId: string, message: string, focus: Focus): Promise<{ conversation: Conversation; provider: string }> {
+export async function sendMessage(projectId: string, conversationId: string, message: string, focus: Focus, signal?: AbortSignal): Promise<{ conversation: Conversation; provider: string }> {
   const text = message.trim();
   if (!text) throw new StorageError("Message is empty.", 400);
   const [project, conversations] = await Promise.all([readProject(projectId), listConversations(projectId)]);
@@ -97,7 +97,9 @@ export async function sendMessage(projectId: string, conversationId: string, mes
   const { text: reply, provider } = await chat({
     system: `${COMPANION_SYSTEM}\n\nCURRENT PROJECT CONTEXT (live data):\n${projectContext(project, focus)}`,
     messages: [...history, { role: "user", content: text }],
+    signal,
   });
+  if (signal?.aborted) throw new StorageError("Cancelled.", 499); // the user cancelled: keep nothing
 
   const t = nowIso();
   const userMsg: StoredMessage = { id: randomUUID(), role: "user", content: text, createdAt: t };

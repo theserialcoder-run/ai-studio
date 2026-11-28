@@ -7,6 +7,7 @@ import { audioProvider } from "./ai/audio";
 import { imageProvider } from "./ai/image";
 import { ProviderError } from "./ai/http";
 import { videoProvider } from "./ai/video";
+import { processState } from "./processState";
 import { readSideFile, saveGeneratedFile, StorageError, updateSideFile } from "./storage";
 
 const MAX_RECORDS = 300;
@@ -14,7 +15,7 @@ const MAX_ACTIVE = 3;
 const MAX_REF_BYTES = 8 * 1024 * 1024;
 
 /** In-flight jobs of this server process: generation id → latest progress message. */
-const active = new Map<string, string>();
+const active = processState("generationJobs", () => new Map<string, string>());
 
 type Store = GenerationRecord[];
 

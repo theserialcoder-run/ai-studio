@@ -1,5 +1,6 @@
 "use client";
 import type { ID, ShotCharacterRef } from "@/lib/types";
+import { Dropdown } from "./Dropdown";
 import { useStudio } from "./studio";
 
 export interface ContinuityValue {
@@ -30,11 +31,9 @@ export function ContinuityPicker({ value, onChange }: { value: ContinuityValue; 
                   <span>{c.name}<small>{c.referenceAssetIds.length} ref image{c.referenceAssetIds.length === 1 ? "" : "s"}</small></span>
                 </label>
                 {ref && c.variations.length > 0 && (
-                  <select className="field compact" aria-label={`${c.name} wardrobe`} value={ref.variationId ?? ""}
-                    onChange={e => onChange({ characters: value.characters.map(r => (r.characterId === c.id ? { ...r, variationId: e.target.value || null } : r)) })}>
-                    <option value="">Default wardrobe</option>
-                    {c.variations.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                  </select>
+                  <Dropdown compact ariaLabel={`${c.name} wardrobe`} value={ref.variationId ?? ""}
+                    onChange={v => onChange({ characters: value.characters.map(r => (r.characterId === c.id ? { ...r, variationId: v || null } : r)) })}
+                    options={[{ value: "", label: "Default wardrobe" }, ...c.variations.map(v => ({ value: v.id, label: v.name }))]} />
                 )}
               </div>
             );
@@ -43,17 +42,13 @@ export function ContinuityPicker({ value, onChange }: { value: ContinuityValue; 
       </div>
       <div className="form-grid">
         <label>LOCATION
-          <select className="field" value={value.locationId ?? ""} onChange={e => onChange({ locationId: e.target.value || null, locationAngleId: null })}>
-            <option value="">— None —</option>
-            {project.locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-          </select>
+          <Dropdown value={value.locationId ?? ""} onChange={v => onChange({ locationId: v || null, locationAngleId: null })}
+            options={[{ value: "", label: "— None —" }, ...project.locations.map(l => ({ value: l.id, label: l.name }))]} />
         </label>
         <label>CAMERA ANGLE OF LOCATION
-          <select className="field" value={value.locationAngleId ?? ""} disabled={!location || location.angles.length === 0}
-            onChange={e => onChange({ locationAngleId: e.target.value || null })}>
-            <option value="">{location && location.angles.length ? "Any / master view" : "No saved angles"}</option>
-            {location?.angles.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
+          <Dropdown value={value.locationAngleId ?? ""} disabled={!location || location.angles.length === 0}
+            onChange={v => onChange({ locationAngleId: v || null })}
+            options={[{ value: "", label: location && location.angles.length ? "Any / master view" : "No saved angles" }, ...(location?.angles ?? []).map(a => ({ value: a.id, label: a.name }))]} />
         </label>
       </div>
     </div>

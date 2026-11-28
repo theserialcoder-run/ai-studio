@@ -4,6 +4,7 @@ import { aiApi, type GenerationView } from "@/lib/client/ai";
 import { assetById, fileUrl, sceneLabel, shotNumber, timeAgo } from "@/lib/projectModel";
 import type { AudioProviderInfo } from "@/lib/ai/types";
 import type { ID } from "@/lib/types";
+import { Dropdown } from "./Dropdown";
 import { AudioPlayer, useStudio } from "./studio";
 
 const DEVANAGARI = /[ऀ-ॿ]/;
@@ -115,14 +116,12 @@ export function VoiceStudio() {
         <div className="panel">
           <div className="form-grid">
             <label>VOICE ENGINE
-              <select className="field" value={provider?.id ?? ""} onChange={e => { setProviderId(e.target.value); setVoice(""); }}>
-                {providers.map(p => <option key={p.id} value={p.id}>{p.label}{p.configured ? "" : " (not configured)"}</option>)}
-              </select>
+              <Dropdown value={provider?.id ?? ""} onChange={v => { setProviderId(v); setVoice(""); }}
+                options={providers.map(p => ({ value: p.id, label: `${p.label}${p.configured ? "" : " (not configured)"}` }))} />
             </label>
             <label>VOICE
-              <select className="field" value={voice} onChange={e => setVoice(e.target.value)}>
-                {caps?.voices.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
-              </select>
+              <Dropdown value={voice} onChange={v => setVoice(v)}
+                options={(caps?.voices ?? []).map(v => ({ value: v.id, label: v.label }))} />
             </label>
           </div>
           {provider && (
@@ -142,16 +141,12 @@ export function VoiceStudio() {
 
           <div className="form-grid">
             <label>LOAD TEXT FROM A SCENE
-              <select className="field" value="" onChange={e => fillFromScene(e.target.value)}>
-                <option value="">— choose a scene —</option>
-                {project.scenes.map(s => <option key={s.id} value={s.id}>{sceneLabel(project, s)}</option>)}
-              </select>
+              <Dropdown value="" onChange={v => fillFromScene(v)}
+                options={[{ value: "", label: "— choose a scene —" }, ...project.scenes.map(s => ({ value: s.id, label: sceneLabel(project, s) }))]} />
             </label>
             <label>ATTACH TO SHOT (OPTIONAL)
-              <select className="field" value={shotId} onChange={e => setShotId(e.target.value)}>
-                <option value="">— none (asset library only) —</option>
-                {project.shots.map(s => <option key={s.id} value={s.id}>Shot {shotNumber(project, s)}{s.title ? ` · ${s.title}` : ""}</option>)}
-              </select>
+              <Dropdown value={shotId} onChange={v => setShotId(v)}
+                options={[{ value: "", label: "— none (asset library only) —" }, ...project.shots.map(s => ({ value: s.id, label: `Shot ${shotNumber(project, s)}${s.title ? ` · ${s.title}` : ""}` }))]} />
             </label>
           </div>
 

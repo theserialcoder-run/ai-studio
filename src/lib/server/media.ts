@@ -2,7 +2,7 @@
 // Processes are spawned directly (never through a shell), so file paths can't inject commands.
 // Install once: `sudo apt install ffmpeg` (or set FFMPEG_PATH / FFPROBE_PATH).
 import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { ProviderError } from "./ai/http";
 
@@ -149,6 +149,24 @@ export async function extractFrame(file: string, time: number, outPath: string):
   const r = await run(ffmpegBin(), ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(Math.max(0, time)), "-i", file,
     "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "5", outPath], { timeoutMs: 120_000 });
   if (r.code !== 0) throw ffError("Extracting a frame", r.stderrTail);
+}
+
+/**
+ * Up to `count` small frames spread evenly over [start, start + length], in one ffmpeg run.
+ * Returns the frames that were written, with their time from `start`.
+ */
+export async function extractFramesEvery(file: string, start: number, length: number, count: number, outDir: string, prefix: string): Promise<{ path: string; time: number }[]> {
+  await requireTools();
+  const step = length / count;
+  const r = await run(ffmpegBin(), ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(round(Math.max(0, start + step / 2))), "-t", String(round(length)), "-i", file,
+    "-vf", `fps=${(1 / step).toFixed(4)},scale=320:-2`, "-frames:v", String(count), "-q:v", "6", path.join(outDir, `${prefix}-%02d.jpg`)], { timeoutMs: 120_000 });
+  if (r.code !== 0) throw ffError("Extracting frames", r.stderrTail);
+  const out: { path: string; time: number }[] = [];
+  for (let i = 0; i < count; i++) {
+    const p = path.join(outDir, `${prefix}-${String(i + 1).padStart(2, "0")}.jpg`);
+    if (existsSync(p)) out.push({ path: p, time: Math.round((i * step + step / 2) * 10) / 10 });
+  }
+  return out;
 }
 
 export interface RenderPart {

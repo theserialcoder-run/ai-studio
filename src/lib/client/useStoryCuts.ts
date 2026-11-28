@@ -44,6 +44,7 @@ export function useStoryCuts(ws: Workspace) {
         : j.kind === "describe" ? `Described ${Object.keys(j.descriptions ?? {}).length} scenes`
         : j.kind === "auto" ? (j.lines ? `Found clips for ${j.lines.length} script lines` : "Saved partial results")
         : j.kind === "stock" ? `Found stock clips for ${j.lines?.length ?? 0} script lines`
+        : j.kind === "check" ? "Checked each clip and pinned its moment"
         : "Rendered a video";
       mutate(d => {
         const cut = d.storyCuts.find(c => c.id === j.cutId);
@@ -53,12 +54,18 @@ export function useStoryCuts(ws: Workspace) {
             const previous = cut.segments;
             cut.segments = j.segments;
             // Script lines keep their text; their scene picks pointed at the old scenes.
-            for (const l of cut.lines) { l.sceneId = null; l.options = []; }
+            for (const l of cut.lines) { l.sceneId = null; l.options = []; l.offset = 0; l.fit = ""; }
             if (j.kind === "stock") dropUnusedStock(d, previous.map(s => s.assetId));
           }
           if (j.descriptions) for (const s of cut.segments) if (j.descriptions[s.id]) s.description = j.descriptions[s.id];
           if (j.cast?.length) cut.cast = j.cast;
-          if (j.lines) { cut.lines = j.lines; cut.mode = "script"; }
+          if (j.lines && j.kind === "check") {
+            // Only the clip choices change; keep any text edits made while it ran.
+            for (const r of j.lines) {
+              const l = cut.lines.find(x => x.id === r.id);
+              if (l && r.sceneId && cut.segments.some(s => s.id === r.sceneId)) Object.assign(l, { sceneId: r.sceneId, options: r.options, offset: r.offset, fit: r.fit });
+            }
+          } else if (j.lines) { cut.lines = j.lines; cut.mode = "script"; }
           if (j.output) {
             if (!d.assets.some(a => a.id === j.output!.id)) d.assets.push(j.output);
             if (!cut.outputAssetIds.includes(j.output.id)) cut.outputAssetIds.push(j.output.id);

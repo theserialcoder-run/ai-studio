@@ -9,6 +9,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { assetKindFromMime, makeProject, normalizeProject, nowIso, summarize } from "../projectModel";
 import type { Asset, Project, ProjectSummary } from "../types";
+import { processState } from "./processState";
 
 const ROOT = path.resolve(process.env.WONDERBOY_DATA_DIR || path.join(process.cwd(), "data"));
 const PROJECTS = path.join(ROOT, "projects");
@@ -32,7 +33,7 @@ const docPath = (id: string) => path.join(projectDir(id), "project.json");
 const filesDir = (id: string) => path.join(projectDir(id), "files");
 
 // Serialize writes per project so concurrent requests can't interleave.
-const locks = new Map<string, Promise<unknown>>();
+const locks = processState("fileLocks", () => new Map<string, Promise<unknown>>());
 function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const prev = locks.get(key) ?? Promise.resolve();
   const next = prev.catch(() => {}).then(fn);

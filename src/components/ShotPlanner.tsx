@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { assetById, makeShot, moveWithinGroup, newId, nowIso, sceneLabel, scenesOf, shotNumber, shotsOf } from "@/lib/projectModel";
 import { SHOT_STATUSES, type ID, type Project, type Shot, type ShotStatus } from "@/lib/types";
 import { ContinuityPicker } from "./ContinuityPicker";
+import { Dropdown } from "./Dropdown";
 import { AssetPreview, EmptyState, ReferenceImages, RowActions, SuggestField, TextField, useStudio } from "./studio";
 
 const FRAMINGS = ["Extreme wide shot", "Wide shot", "Full shot", "Medium wide shot", "Medium shot", "Medium close-up", "Close-up", "Extreme close-up", "Over-the-shoulder", "Two shot", "Insert"];
@@ -46,17 +47,12 @@ export function ShotPlanner() {
 
       <div className="panel toolbar">
         <label className="grow">SCENE
-          <select className="field" value={scene ? scene.id : UNASSIGNED} onChange={e => { setSceneKey(e.target.value); setEditing(null); }}>
-            {project.scripts.map(script => {
-              const list = scenesOf(project, script.id);
-              return list.length ? (
-                <optgroup key={script.id} label={script.title || "Untitled script"}>
-                  {list.map(s => <option key={s.id} value={s.id}>{sceneLabel(project, s)} ({shotsOf(project, s.id).length})</option>)}
-                </optgroup>
-              ) : null;
-            })}
-            <option value={UNASSIGNED}>Unassigned shots ({unassignedCount})</option>
-          </select>
+          <Dropdown value={scene ? scene.id : UNASSIGNED} onChange={v => { setSceneKey(v); setEditing(null); }} options={[
+            ...project.scripts.flatMap(script => scenesOf(project, script.id).map(s => ({
+              value: s.id, label: `${sceneLabel(project, s)} (${shotsOf(project, s.id).length})`, group: script.title || "Untitled script",
+            }))),
+            { value: UNASSIGNED, label: `Unassigned shots (${unassignedCount})` },
+          ]} />
         </label>
         <button className="button primary" onClick={addShot}>Add shot +</button>
       </div>
@@ -142,10 +138,8 @@ function ShotCard({ project, shot, editing, onToggle }: { project: Project; shot
           <div className="form-grid">
             <TextField label="TITLE" value={shot.title} onChange={v => edit({ title: v })} />
             <label>SCENE
-              <select className="field" value={shot.sceneId ?? ""} onChange={e => edit({ sceneId: e.target.value || null }, `Moved ${name} to another scene`)}>
-                <option value="">Unassigned</option>
-                {project.scenes.map(s => <option key={s.id} value={s.id}>{sceneLabel(project, s)}</option>)}
-              </select>
+              <Dropdown value={shot.sceneId ?? ""} onChange={v => edit({ sceneId: v || null }, `Moved ${name} to another scene`)}
+                options={[{ value: "", label: "Unassigned" }, ...project.scenes.map(s => ({ value: s.id, label: sceneLabel(project, s) }))]} />
             </label>
           </div>
           <TextField label="DESCRIPTION / ACTION" multiline value={shot.description} onChange={v => edit({ description: v })} placeholder="What we see: subject, action, composition…" />
@@ -160,9 +154,8 @@ function ShotCard({ project, shot, editing, onToggle }: { project: Project; shot
                 onChange={e => { const n = parseFloat(e.target.value); edit({ durationSec: e.target.value === "" || !isFinite(n) || n < 0 ? null : n }); }} />
             </label>
             <label>STATUS
-              <select className="field" value={shot.status} onChange={e => edit({ status: e.target.value as ShotStatus }, `Marked ${name} as ${e.target.value}`)}>
-                {SHOT_STATUSES.map(s => <option key={s}>{s}</option>)}
-              </select>
+              <Dropdown value={shot.status} onChange={v => edit({ status: v as ShotStatus }, `Marked ${name} as ${v}`)}
+                options={SHOT_STATUSES.map(s => ({ value: s, label: s }))} />
             </label>
           </div>
 

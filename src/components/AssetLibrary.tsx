@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import { fileUrl, formatBytes, removeAsset, shotNumber, timeAgo } from "@/lib/projectModel";
 import type { Asset, AssetKind, ID, Project } from "@/lib/types";
+import { Dropdown } from "./Dropdown";
 import { AssetPreview, EmptyState, Modal, UploadButton, assetLabel, useStudio } from "./studio";
 
 const KINDS: (AssetKind | "all")[] = ["all", "image", "video", "audio", "document", "other"];
@@ -75,9 +76,8 @@ export function AssetLibrary() {
       <div className="panel toolbar">
         <label className="grow">SEARCH<input className="field" value={query} onChange={e => setQuery(e.target.value)} placeholder="Name, tag or note" /></label>
         <label>TYPE
-          <select className="field" value={kind} onChange={e => setKind(e.target.value as AssetKind | "all")}>
-            {KINDS.map(k => <option key={k} value={k}>{k === "all" ? "All types" : k}</option>)}
-          </select>
+          <Dropdown value={kind} onChange={v => setKind(v as AssetKind | "all")}
+            options={KINDS.map(k => ({ value: k, label: k === "all" ? "All types" : k }))} />
         </label>
         <label className="check inline"><input type="checkbox" checked={unusedOnly} onChange={e => setUnusedOnly(e.target.checked)} /><span>Unused only</span></label>
       </div>
@@ -130,35 +130,25 @@ function AssetDetail({ asset, onClose }: { asset: Asset; onClose: () => void }) 
           )}
 
           <div className="inline-form">
-            <select className="field" aria-label="Link to" value={target} onChange={e => setTarget(e.target.value)}>
-              <option value="">Link to…</option>
-              {project.characters.length > 0 && (
-                <optgroup label={isImage ? "Characters" : "Characters (images only)"}>
-                  {project.characters.flatMap(c => [
-                    <option key={c.id} value={`char:${c.id}`} disabled={!isImage}>{c.name} — identity</option>,
-                    ...c.variations.map(v => <option key={v.id} value={`var:${c.id}:${v.id}`} disabled={!isImage}>{c.name} — {v.name}</option>),
-                  ])}
-                </optgroup>
-              )}
-              {project.locations.length > 0 && (
-                <optgroup label={isImage ? "Locations" : "Locations (images only)"}>
-                  {project.locations.flatMap(l => [
-                    <option key={l.id} value={`loc:${l.id}`} disabled={!isImage}>{l.name} — master</option>,
-                    ...l.angles.map(a => <option key={a.id} value={`angle:${l.id}:${a.id}`} disabled={!isImage}>{l.name} — {a.name}</option>),
-                  ])}
-                </optgroup>
-              )}
-              {project.shots.length > 0 && (
-                <optgroup label="Shots — reference">
-                  {project.shots.map(s => <option key={s.id} value={`shot:${s.id}`}>Shot {shotNumber(project, s)}{s.title ? ` · ${s.title}` : ""}</option>)}
-                </optgroup>
-              )}
-              {project.shots.length > 0 && (
-                <optgroup label="Shots — generated take">
-                  {project.shots.map(s => <option key={s.id} value={`take:${s.id}`}>Shot {shotNumber(project, s)}{s.title ? ` · ${s.title}` : ""}</option>)}
-                </optgroup>
-              )}
-            </select>
+            <Dropdown ariaLabel="Link to" value={target} onChange={v => setTarget(v)} options={[
+              { value: "", label: "Link to…" },
+              ...project.characters.flatMap(c => {
+                const group = isImage ? "Characters" : "Characters (images only)";
+                return [
+                  { value: `char:${c.id}`, label: `${c.name} — identity`, group, disabled: !isImage },
+                  ...c.variations.map(v => ({ value: `var:${c.id}:${v.id}`, label: `${c.name} — ${v.name}`, group, disabled: !isImage })),
+                ];
+              }),
+              ...project.locations.flatMap(l => {
+                const group = isImage ? "Locations" : "Locations (images only)";
+                return [
+                  { value: `loc:${l.id}`, label: `${l.name} — master`, group, disabled: !isImage },
+                  ...l.angles.map(a => ({ value: `angle:${l.id}:${a.id}`, label: `${l.name} — ${a.name}`, group, disabled: !isImage })),
+                ];
+              }),
+              ...project.shots.map(s => ({ value: `shot:${s.id}`, label: `Shot ${shotNumber(project, s)}${s.title ? ` · ${s.title}` : ""}`, group: "Shots — reference" })),
+              ...project.shots.map(s => ({ value: `take:${s.id}`, label: `Shot ${shotNumber(project, s)}${s.title ? ` · ${s.title}` : ""}`, group: "Shots — generated take" })),
+            ]} />
             <button className="button secondary" disabled={!target} onClick={() => { ws.mutate(d => linkAsset(d, target, asset.id), `Linked “${asset.name}”`); setTarget(""); }}>Link</button>
           </div>
 

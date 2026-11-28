@@ -41,10 +41,26 @@ export function formatTime(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+/** Estimated speaking time of a narration line, plus a short pause (matches the render's voice pad). */
+export function speakSeconds(text: string, speed = 1): number {
+  const words = countWords(text);
+  return words ? words / (2.4 * speed) + 0.5 : 0;
+}
+
+/**
+ * The part of its scene a script line uses: from `offset` for as long as the voice (min 2 s).
+ * `from` never goes so late that the piece would run past the scene's end, unless the line is longer than the scene.
+ */
+export function linePiece(offset: number, sceneLength: number, text: string, speed = 1): { from: number; to: number; overruns: boolean } {
+  const need = Math.max(2, speakSeconds(text, speed));
+  const from = Math.round(Math.min(Math.max(0, offset), Math.max(0, sceneLength - need)) * 10) / 10;
+  return { from, to: from + need, overruns: from + need > sceneLength + 0.05 };
+}
+
 /* ---------------------------------------------------------------- jobs */
 
-/** "auto" = script mode in one go: detect (if needed) → describe → cast (if empty) → match. */
-export type StoryJobKind = "detect" | "describe" | "render" | "auto" | "stock";
+/** "auto" = script mode in one go: detect (if needed) → describe → cast (if empty) → match → check. "check" = the AI looks at each chosen clip's frames and pins the moment. */
+export type StoryJobKind = "detect" | "describe" | "render" | "auto" | "stock" | "check";
 
 export interface StoryJob {
   id: ID;
@@ -64,7 +80,7 @@ export interface StoryJob {
   output?: Asset;
   /** auto: the suggested cast (only when the cut had none). */
   cast?: StoryCastMember[];
-  /** auto / stock: the script timeline. */
+  /** auto / stock / check: the script timeline. */
   lines?: StoryCutLine[];
   /** stock: downloaded clips to add to the asset library (their segments are in `segments`). */
   assets?: Asset[];

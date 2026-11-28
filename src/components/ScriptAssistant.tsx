@@ -4,6 +4,7 @@ import { aiApi } from "@/lib/client/ai";
 import { sceneLabel, scenesOf } from "@/lib/projectModel";
 import type { Proposal } from "@/lib/proposals";
 import type { ID } from "@/lib/types";
+import { Dropdown } from "./Dropdown";
 import { ProposalCard } from "./ProposalCard";
 import { useStudio } from "./studio";
 
@@ -57,15 +58,11 @@ export function ScriptAssistant({ scriptId }: { scriptId: ID }) {
       {!ready && ai.providers && <div className="setup-note"><strong>No text AI provider configured.</strong> <button className="text-button" onClick={() => go("Settings")}>Set one up ↗</button></div>}
       <div className="form-grid">
         <label>TASK
-          <select className="field" value={task} onChange={e => setTask(e.target.value)}>
-            {TASKS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-          </select>
+          <Dropdown value={task} onChange={v => setTask(v)} options={TASKS.map(t => ({ value: t.id, label: t.label }))} />
         </label>
         <label>SCENE
-          <select className="field" value={sceneId} disabled={!def.scene} onChange={e => setSceneId(e.target.value)}>
-            <option value="">{def.scene ? "— choose a scene —" : "Not needed for this task"}</option>
-            {scenes.map(s => <option key={s.id} value={s.id}>{sceneLabel(project, s)}</option>)}
-          </select>
+          <Dropdown value={sceneId} disabled={!def.scene} onChange={v => setSceneId(v)}
+            options={[{ value: "", label: def.scene ? "— choose a scene —" : "Not needed for this task" }, ...scenes.map(s => ({ value: s.id, label: sceneLabel(project, s) }))]} />
         </label>
       </div>
       <label>INSTRUCTIONS (OPTIONAL)

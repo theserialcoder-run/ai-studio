@@ -391,7 +391,7 @@ export async function runStockSearch(projectId: string, cut: StoryCut, progress:
     progress(`Line ${i + 1} of ${plan.lines.length}: searching “${p.query}”…`);
     const seconds = countWords(p.text) / (2.4 * cut.voice.speed) + 0.5;
     const options = await searchStock(projectId, p.query, p.kind, seconds, used);
-    const line: StoryCutLine = { id: randomUUID(), text: p.text, sceneId: null, options: [], query: p.query, stock: options };
+    const line: StoryCutLine = { id: randomUUID(), text: p.text, sceneId: null, options: [], offset: 0, fit: "", query: p.query, stock: options };
     if (options[0]) {
       used.add(options[0].id);
       progress(`Line ${i + 1} of ${plan.lines.length}: downloading the clip…`);

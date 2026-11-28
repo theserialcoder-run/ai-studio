@@ -5,6 +5,7 @@ import { sceneLabel, timeAgo } from "@/lib/projectModel";
 import { splitChatReply } from "@/lib/proposals";
 import type { Conversation } from "@/lib/ai/types";
 import type { ID } from "@/lib/types";
+import { Dropdown } from "./Dropdown";
 import { ProposalCard } from "./ProposalCard";
 import { useStudio } from "./studio";
 
@@ -22,6 +23,14 @@ export function CompanionView() {
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [waited, setWaited] = useState(0); // seconds the current reply has taken
+  const [pending, setPending] = useState(""); // the message being sent, shown until the reply arrives
+  const abort = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!busy) return;
+    const t = setInterval(() => setWaited(s => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [busy]);
   const [error, setError] = useState("");
   const [focusSceneId, setFocusSceneId] = useState<ID | "">("");
   const [listening, setListening] = useState(false);
@@ -81,22 +90,29 @@ export function CompanionView() {
     const message = (textOverride ?? input).trim();
     if (!message || busy) return;
     setError("");
+    setWaited(0);
     setBusy(true);
+    setPending(message);
+    setInput("");
+    setInterim("");
+    const ctrl = new AbortController();
+    abort.current = ctrl;
     try {
       const conv = active ?? (await newConversation());
-      if (!conv) return;
+      if (!conv) { setInput(message); return; }
       await ws.saveNow(); // the server reads the saved project as context
       const scene = project.scenes.find(s => s.id === focusSceneId);
-      const res = await aiApi.send(project.id, conv.id, message, { sceneId: scene?.id ?? null, scriptId: scene?.scriptId ?? null });
+      const res = await aiApi.send(project.id, conv.id, message, { sceneId: scene?.id ?? null, scriptId: scene?.scriptId ?? null }, ctrl.signal);
       setConversations(list => [res.conversation, ...list.filter(c => c.id !== res.conversation.id)]);
       setActiveId(res.conversation.id);
-      setInput("");
-      setInterim("");
       const reply = res.conversation.messages[res.conversation.messages.length - 1];
       if (autoSpeak && reply?.role === "assistant") speak(reply.content);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "The assistant could not answer.");
+      if (!ctrl.signal.aborted) setError(e instanceof Error ? e.message : "The assistant could not answer.");
+      setInput(cur => cur.trim() ? cur : message); // not sent: give the text back (unless they already typed something new)
     } finally {
+      setPending("");
+      abort.current = null;
       setBusy(false);
     }
   }
@@ -197,7 +213,8 @@ export function CompanionView() {
               </div>
             );
           })}
-          {busy && <div className="muted">Thinking…</div>}
+          {pending && <div className="chat-message user"><span>YOU</span><p>{pending}</p></div>}
+          {busy && <div className="muted">Thinking… {waited} s{waited >= 15 ? " (the AI may be busy; Wonderboy retries by itself, or press Cancel)" : ""}</div>}
           <div ref={bottom} />
         </div>
 
@@ -208,7 +225,9 @@ export function CompanionView() {
           <textarea rows={2} value={input + (interim ? ` ${interim}` : "")} onChange={e => { setInput(e.target.value); setInterim(""); }}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
             placeholder={listening ? "Listening…" : "Ask about your story… (Enter to send, Shift+Enter for a new line)"} />
-          <button className="button primary" onClick={() => void send()} disabled={busy || !llmReady || !input.trim()}>Send ↗</button>
+          {busy
+            ? <button className="button secondary" onClick={() => abort.current?.abort()} title="Stop waiting for this reply; nothing is saved">Cancel</button>
+            : <button className="button primary" onClick={() => void send()} disabled={!llmReady || !input.trim()}>Send ↗</button>}
         </div>
         <div className="chat-options">
           <label className="check inline"><input type="checkbox" checked={autoSpeak} onChange={e => { setAutoSpeak(e.target.checked); try { localStorage.setItem(AUTO_SPEAK_KEY, e.target.checked ? "1" : "0"); } catch { /* ignore */ } }} /><span>Speak replies aloud</span></label>
@@ -220,10 +239,8 @@ export function CompanionView() {
       <div className="panel side-info">
         <h3>Context</h3>
         <label>FOCUS ON SCENE
-          <select className="field" value={focusSceneId} onChange={e => setFocusSceneId(e.target.value)}>
-            <option value="">Whole project</option>
-            {project.scenes.map(s => <option key={s.id} value={s.id}>{sceneLabel(project, s)}</option>)}
-          </select>
+          <Dropdown value={focusSceneId} onChange={v => setFocusSceneId(v)}
+            options={[{ value: "", label: "Whole project" }, ...project.scenes.map(s => ({ value: s.id, label: sceneLabel(project, s) }))]} />
         </label>
         <p className="muted small">The assistant sees the saved project: {project.scripts.length} scripts, {project.scenes.length} scenes, {project.characters.length} characters, {project.locations.length} locations.</p>
         <h3>Try asking</h3>
