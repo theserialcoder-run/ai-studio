@@ -52,7 +52,7 @@ npm run build
 npm start
 ```
 
-- **Desktop launcher (Linux):** `scripts/install-launcher.sh` installs `wonderboy.desktop` (menu + desktop) that runs `scripts/start-wonderboy.sh`: loads nvm's Node, rebuilds only if `src/`, `package.json` or `next.config.ts` is newer than `.next/BUILD_ID`, runs `next start` in the foreground (closing the terminal stops it), and opens the browser when ready. Port via `WONDERBOY_PORT`.
+- **Desktop launcher (Linux):** `scripts/install-launcher.sh` installs `wonderboy.desktop` (menu + desktop) that runs `scripts/start-wonderboy.sh`: loads nvm's Node, rebuilds only if `src/`, `package.json` or `next.config.ts` is newer than `.next/BUILD_ID`, runs `next start` in the foreground (closing the terminal stops it), tees its output to `data/logs/server.log`, keeps the window open with the exit code if the server stops unexpectedly, and opens the browser when ready. If Wonderboy is already answering on the port (e.g. `npm run dev`), it only opens the browser and closes after a few seconds. Running `npm run dev` replaces the production build, so the next launcher start rebuilds (about a minute). Port via `WONDERBOY_PORT`.
 - **Tests:** there's no test suite. Verify with `npx tsc --noEmit`, `npm run lint` and `npm run build`. For API/storage changes, run a short `curl` smoke test against `npm start` with `WONDERBOY_DATA_DIR` set to a temp folder.
   - Start the server with `node_modules/.bin/next start`, not `npx` (killing `npx` leaves the server running), and confirm port 3000/3123 is free afterwards.
   - **Never** call paid providers in tests. Fake credentials are fine for exercising error paths.
@@ -75,7 +75,7 @@ src/
       projects/[id]/conversations/   GET · POST; [cid] PATCH/DELETE; [cid]/messages POST (chat turn)
       projects/[id]/assist/          POST script-assistant task → proposals
       comfyui/route.ts               GET status (?check=1 contacts ComfyUI) · PUT {url, authHeader?, clearAuth?}
-      projects/[id]/storycuts/       jobs GET/POST (detect|describe|render|auto|stock|check; `resume`) · story POST · script POST {action: cast|match} · stock POST {action: swap|search} · frames/[name] GET
+      projects/[id]/storycuts/       jobs GET/POST (detect|describe|render|auto|stock|check; `resume`) · story POST · script POST {action: cast|match} · stock POST {action: swap|search} · frames/[name] GET · still GET ?asset&t (a cached frame at any time: the first frame of each line's piece)
       providers/route.ts             GET provider registry (status + capabilities, no secrets)
   components/
     studio.tsx                       StudioContext/useStudio, TABS, shared UI (fields, Modal, AssetPreview, ReferenceImages…)
@@ -100,6 +100,7 @@ src/
     client/useAi.ts                  Providers + generation polling; imports finished outputs into the project once
     server/storage.ts                fs persistence, side files, generated-file saving (server-only)
     server/http.ts                   StorageError/ProviderError → JSON response
+    server/fileStream.ts             File/byte range → web ReadableStream that tolerates cancelled downloads (never use Readable.toWeb: a cancelled <video> range request throws an uncaught ERR_INVALID_STATE and kills the server)
     server/ai/http.ts                ProviderError, HTTP error explanations, postJsonLong (node:https, long timeout)
     server/ai/llm.ts                 Gemini generateContent + OpenAI-compatible; chat()
     server/ai/image.ts               Cloudflare FLUX.2 klein/dev, FLUX.1 schnell, Gemini image (Interactions API)

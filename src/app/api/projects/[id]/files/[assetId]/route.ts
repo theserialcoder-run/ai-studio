@@ -1,8 +1,7 @@
-import { createReadStream } from "node:fs";
-import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import { findFile, isValidId } from "@/lib/server/storage";
 import { errorResponse } from "@/lib/server/http";
+import { fileStream } from "@/lib/server/fileStream";
 
 export const dynamic = "force-dynamic";
 type Ctx = { params: Promise<{ id: string; assetId: string }> };
@@ -35,13 +34,13 @@ export async function GET(req: Request, { params }: Ctx) {
       start = Math.max(0, start);
       end = Math.min(end, file.size - 1);
       if (start > end) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.size}` } });
-      const stream = Readable.toWeb(createReadStream(file.filePath, { start, end })) as ReadableStream;
+      const stream = fileStream(file.filePath, { start, end });
       return new Response(stream, {
         status: 206,
         headers: { ...headers, "Content-Range": `bytes ${start}-${end}/${file.size}`, "Content-Length": String(end - start + 1) },
       });
     }
-    const stream = Readable.toWeb(createReadStream(file.filePath)) as ReadableStream;
+    const stream = fileStream(file.filePath);
     return new Response(stream, { headers: { ...headers, "Content-Length": String(file.size) } });
   } catch (e) {
     return errorResponse(e);

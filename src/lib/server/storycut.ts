@@ -13,7 +13,7 @@ import { activeLlm, chat } from "./ai/llm";
 import { fetchStock, runStockSearch, searchStock, secondsFor, stockConfigured } from "./stock";
 import { detectScenes, extractFrame, extractFramesEvery, mediaTools, probe, renderParts, type Probe, type RenderPart } from "./media";
 import { processState } from "./processState";
-import { findFile, projectCacheDir, readProject, readSideFile, saveGeneratedFileFromPath, StorageError, updateSideFile } from "./storage";
+import { findFile, isValidId, projectCacheDir, readProject, readSideFile, saveGeneratedFileFromPath, StorageError, updateSideFile } from "./storage";
 
 const MAX_RECORDS = 40;
 const MAX_SCENES = 400;
@@ -28,6 +28,30 @@ export const FRAME_NAME = /^[A-Za-z0-9_-]{1,80}\.jpg$/;
 
 export function framePath(projectId: string, name: string): string | null {
   return FRAME_NAME.test(name) ? path.join(framesDir(projectId), name) : null;
+}
+
+const stillQueue = processState("stillQueue", () => ({ chain: Promise.resolve() as Promise<unknown> })); // one ffmpeg at a time
+
+/**
+ * A frame of a footage video at `time` seconds (rounded to 0.1 s), cached in the frames folder.
+ * Used for the picture of each script line, so it shows where the line's piece starts.
+ */
+export async function stillFrame(projectId: string, assetId: string, time: number): Promise<string> {
+  if (!isValidId(assetId) || !isFinite(time) || time < 0 || time > 86_400) bad("Invalid frame request.");
+  const tenths = Math.round(time * 10);
+  const file = framePath(projectId, `still-${assetId}-${tenths}.jpg`);
+  if (!file) bad("Invalid frame request.");
+  if (existsSync(file!)) return file!;
+  const run = stillQueue.chain.then(async () => {
+    if (existsSync(file!)) return;
+    const src = await findFile(projectId, assetId);
+    if (!src) throw new ProviderError("That video is no longer in the project.", 404);
+    await fs.mkdir(framesDir(projectId), { recursive: true });
+    await extractFrame(src.filePath, tenths / 10, file!);
+  });
+  stillQueue.chain = run.catch(() => {});
+  await run;
+  return file!;
 }
 
 async function patch(projectId: string, id: ID, changes: Partial<StoryJob>) {

@@ -28,6 +28,8 @@ function parseTime(text: string): number | null {
 }
 
 const frameUrl = (projectId: ID, name: string) => `/api/projects/${projectId}/storycuts/frames/${name}`;
+/** The frame where a line's piece starts (extracted and cached by the server). */
+const stillUrl = (projectId: ID, assetId: ID, time: number) => `/api/projects/${projectId}/storycuts/still?asset=${assetId}&t=${(Math.round(time * 10) / 10).toFixed(1)}`;
 const FIT_LABEL = { good: "good fit", loose: "loose fit", poor: "poor fit" } as const;
 const NUDGE = 0.5; // seconds per "earlier / later" click
 
@@ -284,7 +286,7 @@ export function StoryCutStudio() {
               <button className="tiny-button" disabled={i === c.segments.length - 1} onClick={() => moveSegment(i, 1)} aria-label="Move down">↓</button>
               <label className="check inline"><input type="checkbox" checked={!s.skip} onChange={e => editSegment(s.id, x => { x.skip = !e.target.checked; })} /><span>Use</span></label>
             </>}
-            {previewId === s.id && <button className="tiny-button" onClick={() => setPreviewId(null)}>Frames</button>}
+            {previewId === s.id && <button className="tiny-button" onClick={() => setPreviewId(null)} title="Stop the video and show the picture again">✕ Close video</button>}
           </div>
         </div>
         <div className="scene-cut-text">
@@ -325,7 +327,10 @@ export function StoryCutStudio() {
         <div className="scene-cut-media">
           {seg && previewId === l.id
             ? <video key={`${seg.id}-${piece.from}-${piece.to}`} className="scene-cut-video" src={`${fileUrl(project.id, seg.assetId)}#t=${(seg.start + piece.from).toFixed(2)},${(seg.start + piece.to).toFixed(2)}`} controls autoPlay preload="metadata" />
-            : <button type="button" className="scene-cut-frames" onClick={() => (seg ? setPreviewId(l.id) : setPickLineId(l.id))} title={seg ? "Play the part used for this line" : "Choose a scene"}>{renderThumb(seg)}</button>}
+            : <button type="button" className="scene-cut-frames" onClick={() => (seg ? setPreviewId(l.id) : setPickLineId(l.id))} title={seg ? "Play the part used for this line" : "Choose a scene"}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {seg ? <img src={stillUrl(project.id, seg.assetId, seg.start + piece.from)} alt="" loading="lazy" onError={e => { const k = seg.frames[0] && frameUrl(project.id, seg.frames[0]); if (k && !e.currentTarget.src.endsWith(k)) e.currentTarget.src = k; }} /> : renderThumb(seg)}
+              </button>}
           <small className="muted">{seg ? `Scene ${segIndex + 1} · uses ${piece.from.toFixed(1)}–${piece.to.toFixed(1)} s of ${len.toFixed(1)} s` : "No scene chosen"}
             {l.fit && <span className={`fit-badge ${l.fit}`} title="The AI's verdict after looking at this clip's frames">{FIT_LABEL[l.fit]}</span>}</small>
           {seg?.description && <small className="muted scene-desc" title={seg.description}>{seg.description}</small>}
@@ -335,7 +340,7 @@ export function StoryCutStudio() {
               <button className="tiny-button" disabled={piece.from <= 0} onClick={() => nudge(-NUDGE)} title={`Start ${NUDGE} s earlier in the scene`}>◀ Earlier</button>
               <button className="tiny-button" disabled={piece.from >= linePiece(len, len, l.text, c.voice.speed).from} onClick={() => nudge(NUDGE)} title={`Start ${NUDGE} s later in the scene`}>Later ▶</button>
             </>}
-            {previewId === l.id && <button className="tiny-button" onClick={() => setPreviewId(null)}>Frames</button>}
+            {previewId === l.id && <button className="tiny-button" onClick={() => setPreviewId(null)} title="Stop the video and show the picture again">✕ Close video</button>}
           </div>
           {alternatives.length > 0 && (
             <div className="alt-row" aria-label="Other suggestions">
